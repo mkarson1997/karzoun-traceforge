@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
-from pathlib import Path
 import signal
+from pathlib import Path
 
 import grpc
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
@@ -96,11 +97,8 @@ async def serve(config: GatewayConfig) -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
+        with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop_event.set)
-        except NotImplementedError:
-            # add_signal_handler is not implemented by the default Windows event loop.
-            pass
 
     await server.start()
     LOGGER.info(
@@ -174,7 +172,7 @@ async def _handle_health(
             + payload
         )
         await writer.drain()
-    except (asyncio.TimeoutError, ConnectionError):
+    except (TimeoutError, ConnectionError):
         pass
     finally:
         writer.close()
