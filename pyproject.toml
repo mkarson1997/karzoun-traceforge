@@ -24,6 +24,9 @@ dev = [
   "ruff>=0.12",
   "mypy>=1.15",
 ]
+azure = [
+  "azure-kusto-data>=6.0.4,<7",
+]
 
 [project.scripts]
 traceforge-scrub = "traceforge.cli:main"
@@ -31,6 +34,7 @@ traceforge-gateway = "traceforge.gateway.server:main"
 traceforge-store = "traceforge.store.server:main"
 traceforge-demo = "traceforge.demo:main"
 traceforge-export = "traceforge.store.export_cli:main"
+traceforge-kusto-viewer = "traceforge.kusto.viewer_server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traceforge"]
