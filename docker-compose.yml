@@ -1,0 +1,23 @@
+services:
+  central-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./deploy/otel/central-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    expose:
+      - "4319"
+
+  privacy-gateway:
+    build:
+      context: .
+    environment:
+      TRACEFORGE_UPSTREAM_OTLP_ENDPOINT: central-collector:4319
+      TRACEFORGE_UPSTREAM_INSECURE: "true"
+      TRACEFORGE_REDACTION_MODE: redact
+      TRACEFORGE_REDACT_PII: "true"
+      TRACEFORGE_DETECT_HIGH_ENTROPY: "true"
+    depends_on:
+      - central-collector
+    ports:
+      - "4317:4317"
+      - "8080:8080"

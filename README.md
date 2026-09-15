@@ -49,6 +49,10 @@ See [docs/architecture.md](docs/architecture.md) for the full target design and 
 - CLI for local scrubbing experiments
 - Edge OpenTelemetry Collector configuration bound to loopback
 - Unit tests covering privacy-critical behavior
+- OTLP/gRPC privacy gateway with fail-closed upstream forwarding
+- Trace, event, link, resource, and instrumentation-scope attribute scrubbing
+- Lightweight `/healthz` and `/readyz` endpoints
+- Local Docker Compose path from gateway to a central OpenTelemetry Collector
 
 ## Quick start
 
@@ -56,7 +60,7 @@ Requires Python 3.11+.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate  # Windows PowerShell: .venv\\Scripts\\Activate.ps1
 pip install -e .
 ```
 
@@ -94,9 +98,27 @@ traceforge-scrub sample.json --mode tokenize
 pytest
 ```
 
+
+## Run the privacy gateway locally
+
+The gateway accepts OTLP/gRPC on port `4317`, scrubs the request in memory, and forwards only the sanitized request to an upstream OTLP collector.
+
+```bash
+docker compose up --build
+```
+
+Health endpoints:
+
+```text
+http://localhost:8080/healthz
+http://localhost:8080/readyz
+```
+
+For a production network path, set `TRACEFORGE_UPSTREAM_INSECURE=false` and provide a CA file. Client certificate and key environment variables enable mTLS.
+
 ## OpenTelemetry edge collector
 
-The first edge configuration lives at `deploy/otel/edge-collector.yaml`. It listens on loopback only and forwards traces to the future privacy gateway.
+The first edge configuration lives at `deploy/otel/edge-collector.yaml`. It listens on loopback only and forwards traces to the privacy gateway.
 
 ```bash
 export TRACEFORGE_GATEWAY_OTLP_ENDPOINT=privacy-gateway.example:4317
@@ -110,7 +132,7 @@ The reference collector distribution is OpenTelemetry Collector Contrib. Product
 
 The project is intentionally staged so privacy is proven before storage and UI work. See [docs/roadmap.md](docs/roadmap.md).
 
-The next engineering milestone is the OTLP/gRPC privacy gateway, followed by a local end-to-end demo and then the Azure production profile.
+The OTLP/gRPC privacy gateway is now implemented and covered by an in-process forwarding test. The next engineering milestone is the synthetic coding-agent generator and local trace viewer, followed by the Azure production profile.
 
 ## Commercial status
 
