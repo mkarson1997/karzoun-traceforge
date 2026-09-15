@@ -57,11 +57,11 @@ var collectorConfig = deployKusto
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-07-01' = {
   name: logAnalyticsName
   location: location
-  sku: {
-    name: 'PerGB2018'
-  }
   properties: {
     retentionInDays: 30
+    sku: {
+      name: 'PerGB2018'
+    }
     features: {
       enableLogAccessUsingOnlyResourcePermissions: true
     }
@@ -262,7 +262,7 @@ resource kustoSchema 'Microsoft.Kusto/clusters/databases/scripts@2025-02-14' = i
 
 resource kustoIngestor 'Microsoft.Kusto/clusters/databases/principalAssignments@2025-02-14' = if (deployKusto) {
   parent: kustoDatabase
-  name: guid(kustoDatabase.id, collectorIdentity.properties.clientId, 'ingestor')
+  name: guid(kustoDatabase.id, collectorIdentity.id, 'ingestor')
   properties: {
     principalId: collectorIdentity.properties.clientId
     principalType: 'App'
