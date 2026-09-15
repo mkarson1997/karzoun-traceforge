@@ -65,5 +65,7 @@ def test_search_treats_like_wildcards_as_literal_text(tmp_path):
     repository = TraceRepository(tmp_path / "traceforge.db")
     repository.ingest(request)
 
-    assert repository.search_spans("%") == []
-    assert repository.search_spans("_") == []
+    # These would match the literal value ``task-search`` if SQL LIKE wildcards
+    # were allowed to leak through unescaped.
+    assert repository.search_spans("task%search") == []
+    assert repository.search_spans("task_search") == []
