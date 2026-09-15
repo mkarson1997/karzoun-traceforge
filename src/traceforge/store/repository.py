@@ -6,7 +6,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
+    ExportTraceServiceRequest,
+)
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 
 
