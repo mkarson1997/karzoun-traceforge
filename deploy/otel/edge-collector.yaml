@@ -1,0 +1,37 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  resource/traceforge:
+    attributes:
+      - key: traceforge.edge
+        value: true
+        action: upsert
+  batch:
+    timeout: 1s
+    send_batch_size: 512
+
+exporters:
+  otlp/privacy_gateway:
+    endpoint: ${env:TRACEFORGE_GATEWAY_OTLP_ENDPOINT}
+    tls:
+      insecure: ${env:TRACEFORGE_GATEWAY_INSECURE}
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource/traceforge, batch]
+      exporters: [otlp/privacy_gateway]
