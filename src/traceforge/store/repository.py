@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS spans (
     PRIMARY KEY (trace_id, span_id)
 );
 
+CREATE TABLE IF NOT EXISTS privacy_exports (
+    export_id TEXT PRIMARY KEY,
+    findings INTEGER NOT NULL,
+    attributes_removed INTEGER NOT NULL,
+    attributes_rewritten INTEGER NOT NULL,
+    spans_seen INTEGER NOT NULL,
+    events_seen INTEGER NOT NULL,
+    links_seen INTEGER NOT NULL,
+    ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_spans_session_start
 ON spans(session_id, start_ns DESC);
 
@@ -47,6 +58,12 @@ ON spans(task_id, start_ns DESC);
 
 CREATE INDEX IF NOT EXISTS idx_spans_trace_start
 ON spans(trace_id, start_ns ASC);
+
+CREATE INDEX IF NOT EXISTS idx_spans_service_start
+ON spans(service_name, start_ns DESC);
+
+CREATE INDEX IF NOT EXISTS idx_spans_agent_start
+ON spans(agent_name, start_ns DESC);
 """
 
 
@@ -64,8 +81,13 @@ class TraceRepository:
 
     def ingest(self, request: ExportTraceServiceRequest) -> int:
         rows: list[tuple[Any, ...]] = []
+        privacy_rows: list[tuple[Any, ...]] = []
         for resource_spans in request.resource_spans:
             resource = _key_values(resource_spans.resource.attributes)
+            privacy_summary = _privacy_summary(resource)
+            if privacy_summary is not None:
+                privacy_rows.append(privacy_summary)
+
             service_name = _as_text(resource.get("service.name"))
             resource_json = _dump_json(resource)
 
@@ -131,10 +153,10 @@ class TraceRepository:
                         )
                     )
 
-        if not rows:
+        if not rows and not privacy_rows:
             return 0
 
-        statement = """
+        span_statement = """
         INSERT INTO spans (
             trace_id, span_id, parent_span_id, name, kind, start_ns, end_ns,
             duration_ns, status_code, status_message, task_id, session_id,
@@ -160,8 +182,25 @@ class TraceRepository:
             links_json=excluded.links_json,
             ingested_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
         """
+        privacy_statement = """
+        INSERT INTO privacy_exports (
+            export_id, findings, attributes_removed, attributes_rewritten,
+            spans_seen, events_seen, links_seen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(export_id) DO UPDATE SET
+            findings=excluded.findings,
+            attributes_removed=excluded.attributes_removed,
+            attributes_rewritten=excluded.attributes_rewritten,
+            spans_seen=excluded.spans_seen,
+            events_seen=excluded.events_seen,
+            links_seen=excluded.links_seen,
+            ingested_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        """
         with self._connect() as connection:
-            connection.executemany(statement, rows)
+            if rows:
+                connection.executemany(span_statement, rows)
+            if privacy_rows:
+                connection.executemany(privacy_statement, privacy_rows)
         return len(rows)
 
     def stats(self) -> dict[str, int | str | None]:
@@ -171,7 +210,15 @@ class TraceRepository:
             COUNT(DISTINCT trace_id) AS traces,
             COUNT(DISTINCT NULLIF(session_id, '')) AS sessions,
             COUNT(DISTINCT NULLIF(task_id, '')) AS tasks,
-            MAX(ingested_at) AS last_ingested_at
+            MAX(ingested_at) AS last_ingested_at,
+            (SELECT COUNT(*) FROM privacy_exports) AS privacy_exports,
+            COALESCE((SELECT SUM(findings) FROM privacy_exports), 0) AS privacy_findings,
+            COALESCE(
+                (SELECT SUM(attributes_removed) FROM privacy_exports), 0
+            ) AS privacy_attributes_removed,
+            COALESCE(
+                (SELECT SUM(attributes_rewritten) FROM privacy_exports), 0
+            ) AS privacy_attributes_rewritten
         FROM spans
         """
         with self._connect() as connection:
@@ -243,6 +290,118 @@ class TraceRepository:
             "spans": spans,
         }
 
+    def search_spans(
+        self,
+        query: str = "",
+        *,
+        service: str | None = None,
+        agent: str | None = None,
+        status_code: int | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        query = query.strip()
+        if query:
+            pattern = f"%{_escape_like(query.lower())}%"
+            search_columns = (
+                "trace_id",
+                "span_id",
+                "name",
+                "COALESCE(task_id, '')",
+                "COALESCE(session_id, '')",
+                "COALESCE(agent_name, '')",
+                "COALESCE(service_name, '')",
+                "attributes_json",
+                "events_json",
+            )
+            clauses.append(
+                "("
+                + " OR ".join(
+                    f"LOWER({column}) LIKE ? ESCAPE '\\'" for column in search_columns
+                )
+                + ")"
+            )
+            params.extend([pattern] * len(search_columns))
+        if service:
+            clauses.append("service_name = ?")
+            params.append(service)
+        if agent:
+            clauses.append("agent_name = ?")
+            params.append(agent)
+        if status_code is not None:
+            clauses.append("status_code = ?")
+            params.append(status_code)
+
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(limit, 500)))
+        sql = f"""
+        SELECT *
+        FROM spans
+        {where}
+        ORDER BY start_ns DESC
+        LIMIT ?
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [_decode_span_row(row) for row in rows]
+
+    def list_privacy_exports(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM privacy_exports
+                ORDER BY ingested_at DESC
+                LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def export_spans(
+        self,
+        *,
+        session_id: str | None = None,
+        task_id: str | None = None,
+        limit: int = 10_000,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if task_id:
+            clauses.append("task_id = ?")
+            params.append(task_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        params.append(max(1, min(limit, 100_000)))
+        sql = f"""
+        SELECT *
+        FROM spans
+        {where}
+        ORDER BY start_ns ASC, trace_id ASC, span_id ASC
+        LIMIT ?
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [_decode_span_row(row) for row in rows]
+
+
+def _privacy_summary(resource: dict[str, Any]) -> tuple[Any, ...] | None:
+    export_id = _as_text(resource.get("traceforge.privacy.export_id"))
+    if not export_id:
+        return None
+    return (
+        export_id,
+        _as_int(resource.get("traceforge.privacy.findings")),
+        _as_int(resource.get("traceforge.privacy.attributes_removed")),
+        _as_int(resource.get("traceforge.privacy.attributes_rewritten")),
+        _as_int(resource.get("traceforge.privacy.spans_seen")),
+        _as_int(resource.get("traceforge.privacy.events_seen")),
+        _as_int(resource.get("traceforge.privacy.links_seen")),
+    )
+
 
 def _decode_span_row(row: sqlite3.Row) -> dict[str, Any]:
     value = dict(row)
@@ -282,6 +441,17 @@ def _as_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _dump_json(value: Any) -> str:

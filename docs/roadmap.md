@@ -41,9 +41,9 @@
 - [x] Read-only JSON API
 - [x] Trace timeline UI
 - [x] Defense-in-depth scrubbing at storage ingress
-- [ ] Full-text/attribute search and filters
-- [ ] Persisted scrub-finding counters without matched values
-- [ ] Export of sanitized datasets
+- [x] Full-text/attribute search and filters
+- [x] Persisted scrub-finding counters without matched values
+- [x] Sanitized JSONL dataset export
 
 ## M5 - Azure production profile
 

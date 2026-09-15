@@ -2,9 +2,9 @@
 
 Privacy-first observability and trace collection for AI coding agents.
 
-TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a read-only trace viewer.
+TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. The local end-to-end reference stack is working; the Azure production profile is the next major delivery track.
+> Status: engineering preview. M0-M4 are implemented in the local reference stack; the Azure production profile is the next major delivery track.
 
 ## Why TraceForge
 
@@ -29,7 +29,10 @@ TraceForge Trace Store
   defense-in-depth scrub -> SQLite WAL
               |
               v
-Read-only API + Trace Viewer
+Searchable read-only API + Trace Viewer
+              |
+              v
+Sanitized JSONL export
 ```
 
 The production profile will preserve the same privacy boundary while adding Azure Container Apps, Managed Identity/Key Vault, Azure Monitor, ADX/Kusto, Blob/ADLS, private networking, RBAC, and Microsoft Entra ID.
@@ -46,14 +49,18 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 - Optional stable HMAC tokenization for privacy-preserving equality correlation
 - OTLP/gRPC privacy gateway with upstream TLS/mTLS support and fail-closed forwarding
 - Trace, event, link, resource, and instrumentation-scope attribute scrubbing
+- Non-sensitive privacy audit counters propagated with an opaque export ID
 - `/healthz` and `/readyz` gateway endpoints
 - Central OpenTelemetry Collector with queued/retried delivery to the local store
 - SQLite WAL trace store with idempotent `(trace_id, span_id)` upserts
 - Task -> session -> trace correlation
 - Read-only JSON API and browser trace timeline
+- Sanitized span search across IDs, names, agent/service fields, attributes, and events
+- Service, agent, and status filters in the read-only API
+- Sanitized JSONL export over HTTP and the `traceforge-export` CLI
 - Synthetic coding-agent generator containing deliberate privacy test vectors
 - Defense-in-depth scrub at storage ingress
-- CI regression test proving fake prompts, source code, email addresses, and credentials do not reach persistent storage
+- CI regression tests proving fake prompts, source code, email addresses, and credentials do not reach persistent storage or exports
 - PowerShell and POSIX one-command demo bootstrap scripts
 
 ## One-command local demo
@@ -80,6 +87,8 @@ Open the viewer at:
 ```text
 http://localhost:8081
 ```
+
+The viewer includes session browsing, span/attribute search, privacy finding totals, trace waterfalls, and a one-click sanitized JSONL export.
 
 Gateway health endpoints:
 
@@ -138,6 +147,23 @@ Run the local store/viewer directly:
 traceforge-store --db ./traceforge.db --otlp-address 127.0.0.1:4320 --http-address 127.0.0.1:8081
 ```
 
+Export a local sanitized store as JSONL:
+
+```bash
+traceforge-export --db ./traceforge.db --output ./sanitized-spans.jsonl
+```
+
+Read-only API examples:
+
+```text
+GET /api/stats
+GET /api/sessions
+GET /api/search?q=tool.shell
+GET /api/privacy
+GET /api/export.jsonl?session=session-id
+GET /api/traces/{trace_id}
+```
+
 ## Privacy invariant
 
 Persistent storage is never intended to be the first scrub point.
@@ -148,7 +174,7 @@ The expected path is:
 agent -> privacy gateway -> collector -> store
 ```
 
-The store still scrubs again as defense in depth. CI contains a synthetic leak-prevention test that starts with raw fake secrets and verifies that the resulting persisted trace does not contain them.
+The gateway attaches only an opaque export ID and aggregate privacy counters after scrubbing. The store scrubs again as defense in depth. CI starts with synthetic raw secrets and verifies that the persisted trace and exported JSONL contain none of those raw values.
 
 ## OpenTelemetry edge collector
 
@@ -164,7 +190,7 @@ For production transport, configure a trusted CA and client certificate/key for 
 
 ## Delivery plan
 
-M0-M3 are implemented. The core of M4 is also present: correlation, persistent local storage, read-only APIs, and the trace timeline. Remaining M4 work is search/filtering, privacy-finding counters, and sanitized dataset export. M5 then moves the reference design into the Azure production profile.
+M0-M4 are implemented in the reference stack: foundation, privacy kernel, OTLP gateway, end-to-end local pipeline, correlation, persistence, searchable viewer, privacy counters, and sanitized export. M5 moves the design into the Azure production profile. M6 hardens security and reliability, and M7 packages adapters and organization controls for product use.
 
 ## Commercial status
 

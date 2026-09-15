@@ -5,6 +5,7 @@ import contextlib
 import logging
 import signal
 from pathlib import Path
+from uuid import uuid4
 
 import grpc
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
@@ -17,7 +18,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
 )
 
 from traceforge.gateway.config import GatewayConfig
-from traceforge.gateway.otel_scrub import scrub_trace_export_request
+from traceforge.gateway.otel_scrub import attach_privacy_summary, scrub_trace_export_request
 from traceforge.privacy import Scrubber
 
 LOGGER = logging.getLogger("traceforge.gateway")
@@ -40,9 +41,13 @@ class PrivacyGateway(TraceServiceServicer):
         sanitized = type(request)()
         sanitized.CopyFrom(request)
         stats = scrub_trace_export_request(sanitized, self._scrubber)
+        export_id = uuid4().hex
+        attach_privacy_summary(sanitized, stats, export_id=export_id)
 
         LOGGER.info(
-            "trace export scrubbed spans=%d events=%d links=%d findings=%d removed=%d rewritten=%d",
+            "trace export scrubbed export=%s spans=%d events=%d links=%d findings=%d "
+            "removed=%d rewritten=%d",
+            export_id,
             stats.spans_seen,
             stats.events_seen,
             stats.links_seen,

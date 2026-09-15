@@ -30,6 +30,7 @@ traceforge-scrub = "traceforge.cli:main"
 traceforge-gateway = "traceforge.gateway.server:main"
 traceforge-store = "traceforge.store.server:main"
 traceforge-demo = "traceforge.demo:main"
+traceforge-export = "traceforge.store.export_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traceforge"]

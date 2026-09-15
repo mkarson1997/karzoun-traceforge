@@ -142,6 +142,32 @@ def scrub_trace_export_request(
     return total
 
 
+def attach_privacy_summary(
+    request: ExportTraceServiceRequest,
+    stats: OtlpScrubStats,
+    *,
+    export_id: str,
+) -> None:
+    """Attach non-sensitive scrub counters so downstream storage can audit privacy work."""
+
+    if not request.resource_spans:
+        return
+    attributes = request.resource_spans[0].resource.attributes
+    summary: tuple[tuple[str, str | int], ...] = (
+        ("traceforge.privacy.export_id", export_id),
+        ("traceforge.privacy.findings", stats.findings),
+        ("traceforge.privacy.attributes_removed", stats.attributes_removed),
+        ("traceforge.privacy.attributes_rewritten", stats.attributes_rewritten),
+        ("traceforge.privacy.spans_seen", stats.spans_seen),
+        ("traceforge.privacy.events_seen", stats.events_seen),
+        ("traceforge.privacy.links_seen", stats.links_seen),
+    )
+    for key, value in summary:
+        candidate = attributes.add()
+        candidate.key = key
+        _native_to_any_value(value, candidate.value)
+
+
 def _scrub_key_values(
     attributes: Any,
     scrubber: Scrubber,
