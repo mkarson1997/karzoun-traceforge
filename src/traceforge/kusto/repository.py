@@ -386,10 +386,7 @@ OTELTraces
 
         table = response.primary_results[0]
         names = [column.column_name for column in table.columns]
-        return [
-            {name: row[index] for index, name in enumerate(names)}
-            for row in table
-        ]
+        return [{name: row[index] for index, name in enumerate(names)} for row in table]
 
 
 def _build_client(
@@ -464,7 +461,11 @@ def _datetime_to_ns(value: Any) -> int:
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=UTC)
-        return int(value.timestamp() * 1_000_000_000)
+        delta = value.astimezone(UTC) - datetime(1970, 1, 1, tzinfo=UTC)
+        return (
+            (delta.days * 86_400 + delta.seconds) * 1_000_000_000
+            + delta.microseconds * 1_000
+        )
     if isinstance(value, (int, float)):
         return int(float(value) * 1_000_000_000)
     text = str(value).strip()
@@ -473,7 +474,7 @@ def _datetime_to_ns(value: Any) -> int:
     parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    return int(parsed.timestamp() * 1_000_000_000)
+    return _datetime_to_ns(parsed)
 
 
 def _iso_datetime(value: Any) -> str | None:
