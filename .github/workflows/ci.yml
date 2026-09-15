@@ -19,3 +19,14 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check .
       - run: pytest
+
+  infrastructure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bicep CLI
+        run: az bicep install
+      - name: Compile Azure production template
+        run: az bicep build --file deploy/azure/main.bicep --stdout > /dev/null
+      - name: Build pinned collector image
+        run: docker build -f Dockerfile.collector -t traceforge-collector:ci .

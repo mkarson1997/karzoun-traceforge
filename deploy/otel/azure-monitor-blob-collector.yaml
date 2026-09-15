@@ -1,0 +1,49 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 96
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+
+exporters:
+  azuremonitor:
+    connection_string: ${env:APPLICATIONINSIGHTS_CONNECTION_STRING}
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      queue_size: 2048
+  azureblob:
+    url: ${env:AZURE_STORAGE_BLOB_URL}
+    auth:
+      type: user_managed_identity
+      client_id: ${env:AZURE_CLIENT_ID}
+    container:
+      traces: sanitized-traces
+      metrics: sanitized-metrics
+      logs: sanitized-logs
+    format: json
+    compression: gzip
+    retry_on_failure:
+      enabled: true
+    sending_queue:
+      enabled: true
+      queue_size: 2048
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [azuremonitor, azureblob]

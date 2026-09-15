@@ -47,14 +47,16 @@
 
 ## M5 - Azure production profile
 
-- [ ] Infrastructure as code
-- [ ] Azure Container Apps
-- [ ] Managed identity and Key Vault
-- [ ] Microsoft Entra ID authentication
-- [ ] Azure Monitor / Application Insights OTLP export
-- [ ] ADX/Kusto query store
-- [ ] Blob/ADLS sanitized archive
-- [ ] Private networking and RBAC
+- [x] Bicep infrastructure foundation
+- [x] Azure Container Apps privacy gateway and internal collector
+- [x] Separate managed identities and RBAC-enabled Key Vault
+- [ ] Microsoft Entra ID authentication on the production viewer
+- [x] Azure Monitor / workspace-based Application Insights OTLP export
+- [x] Optional ADX/Kusto cluster, database, schema, and managed-identity ingestion
+- [x] ADLS Gen2 archive containers and opt-in managed-identity Blob exporter profile
+- [ ] ADX-backed read-only viewer repository
+- [ ] Private endpoints, VNet hardening, and public-network shutdown
+- [ ] Live deployment validation in an Azure subscription
 
 ## M6 - Security and reliability
 
