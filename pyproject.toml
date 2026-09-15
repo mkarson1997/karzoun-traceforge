@@ -28,6 +28,8 @@ dev = [
 [project.scripts]
 traceforge-scrub = "traceforge.cli:main"
 traceforge-gateway = "traceforge.gateway.server:main"
+traceforge-store = "traceforge.store.server:main"
+traceforge-demo = "traceforge.demo:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traceforge"]

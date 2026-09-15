@@ -14,6 +14,8 @@ build/
 coverage.xml
 .coverage
 htmlcov/
+*.db
+*.sqlite*
 .DS_Store
 .vscode/
 .idea/

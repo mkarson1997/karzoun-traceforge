@@ -14,8 +14,18 @@ processors:
     send_batch_size: 512
 
 exporters:
-  debug:
-    verbosity: basic
+  otlp/traceforge_store:
+    endpoint: trace-store:4320
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 10s
+      max_elapsed_time: 60s
+    sending_queue:
+      enabled: true
+      queue_size: 2048
 
 service:
   telemetry:
@@ -25,4 +35,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [otlp/traceforge_store]
