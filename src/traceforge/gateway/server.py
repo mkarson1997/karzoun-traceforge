@@ -17,6 +17,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
     add_TraceServiceServicer_to_server,
 )
 
+from traceforge.gateway.client_auth import client_certificate_authorized
 from traceforge.gateway.config import GatewayConfig
 from traceforge.gateway.otel_scrub import attach_privacy_summary, scrub_trace_export_request
 from traceforge.privacy import Scrubber
@@ -33,6 +34,7 @@ class PrivacyGateway(TraceServiceServicer):
         export_timeout_seconds: float,
         max_inflight_exports: int = 64,
         admission_timeout_seconds: float = 0.25,
+        trusted_client_certificate_hashes: frozenset[str] = frozenset(),
     ) -> None:
         if max_inflight_exports < 1:
             raise ValueError("max_inflight_exports must be at least 1")
@@ -44,18 +46,32 @@ class PrivacyGateway(TraceServiceServicer):
         self._export_timeout_seconds = export_timeout_seconds
         self._max_inflight_exports = max_inflight_exports
         self._admission_timeout_seconds = admission_timeout_seconds
+        self._trusted_client_certificate_hashes = trusted_client_certificate_hashes
         self._admission = asyncio.Semaphore(max_inflight_exports)
         self.ready = True
 
         self._inflight_exports = 0
         self._accepted_exports_total = 0
         self._rejected_exports_total = 0
+        self._client_auth_rejections_total = 0
         self._upstream_failures_total = 0
         self._scrub_findings_total = 0
         self._scrub_attributes_removed_total = 0
         self._scrub_attributes_rewritten_total = 0
 
     async def Export(self, request, context):  # noqa: N802 - gRPC generated method name
+        if self._trusted_client_certificate_hashes and not client_certificate_authorized(
+            context.invocation_metadata(),
+            self._trusted_client_certificate_hashes,
+        ):
+            self._client_auth_rejections_total += 1
+            LOGGER.warning("trace export rejected by client certificate authorization")
+            await context.abort(
+                grpc.StatusCode.UNAUTHENTICATED,
+                "client certificate is missing or not trusted",
+            )
+            return ExportTraceServiceResponse()
+
         try:
             await asyncio.wait_for(
                 self._admission.acquire(),
@@ -120,6 +136,7 @@ class PrivacyGateway(TraceServiceServicer):
             "max_inflight_exports": self._max_inflight_exports,
             "accepted_exports_total": self._accepted_exports_total,
             "rejected_exports_total": self._rejected_exports_total,
+            "client_auth_rejections_total": self._client_auth_rejections_total,
             "upstream_failures_total": self._upstream_failures_total,
             "scrub_findings_total": self._scrub_findings_total,
             "scrub_attributes_removed_total": self._scrub_attributes_removed_total,
@@ -148,6 +165,10 @@ class PrivacyGateway(TraceServiceServicer):
                 "# HELP traceforge_gateway_exports_rejected_total OTLP exports rejected by admission control.",
                 "# TYPE traceforge_gateway_exports_rejected_total counter",
                 f"traceforge_gateway_exports_rejected_total {snapshot['rejected_exports_total']}",
+                "# HELP traceforge_gateway_client_auth_rejections_total OTLP exports rejected by certificate authorization.",
+                "# TYPE traceforge_gateway_client_auth_rejections_total counter",
+                "traceforge_gateway_client_auth_rejections_total "
+                f"{snapshot['client_auth_rejections_total']}",
                 "# HELP traceforge_gateway_upstream_failures_total Admitted exports that failed upstream.",
                 "# TYPE traceforge_gateway_upstream_failures_total counter",
                 f"traceforge_gateway_upstream_failures_total {snapshot['upstream_failures_total']}",
@@ -184,6 +205,7 @@ async def serve(config: GatewayConfig) -> None:
         export_timeout_seconds=config.export_timeout_seconds,
         max_inflight_exports=config.max_inflight_exports,
         admission_timeout_seconds=config.admission_timeout_seconds,
+        trusted_client_certificate_hashes=config.trusted_client_certificate_hashes,
     )
 
     server = grpc.aio.server(
@@ -210,10 +232,12 @@ async def serve(config: GatewayConfig) -> None:
 
     await server.start()
     LOGGER.info(
-        "TraceForge privacy gateway listening on %s; upstream=%s; max_inflight=%d",
+        "TraceForge privacy gateway listening on %s; upstream=%s; max_inflight=%d; "
+        "client_cert_allowlist=%d",
         config.listen_address,
         config.upstream_endpoint,
         config.max_inflight_exports,
+        len(config.trusted_client_certificate_hashes),
     )
 
     try:

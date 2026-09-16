@@ -37,6 +37,15 @@ class BlockingUpstreamStub:
         return ExportTraceServiceResponse()
 
 
+class ImmediateUpstreamStub:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def Export(self, request, timeout=None):  # noqa: N802, ARG002
+        self.calls += 1
+        return ExportTraceServiceResponse()
+
+
 class AbortCalled(Exception):
     def __init__(self, code: grpc.StatusCode, details: str) -> None:
         super().__init__(details)
@@ -45,6 +54,12 @@ class AbortCalled(Exception):
 
 
 class FakeContext:
+    def __init__(self, metadata=()) -> None:
+        self._metadata = metadata
+
+    def invocation_metadata(self):
+        return self._metadata
+
     async def abort(self, code: grpc.StatusCode, details: str):
         raise AbortCalled(code, details)
 
@@ -55,6 +70,10 @@ def test_gateway_forwards_only_sanitized_request() -> None:
 
 def test_gateway_rejects_when_admission_capacity_is_exhausted() -> None:
     asyncio.run(_exercise_backpressure())
+
+
+def test_gateway_enforces_forwarded_client_certificate_allowlist() -> None:
+    asyncio.run(_exercise_client_certificate_authorization())
 
 
 async def _exercise_gateway() -> None:
@@ -141,3 +160,40 @@ async def _exercise_backpressure() -> None:
     upstream.release.set()
     await first
     assert servicer.metrics_snapshot()["inflight_exports"] == 0
+
+
+async def _exercise_client_certificate_authorization() -> None:
+    trusted_hash = "AB" * 32
+    upstream = ImmediateUpstreamStub()
+    servicer = PrivacyGateway(
+        scrubber=Scrubber(),
+        upstream_stub=upstream,  # type: ignore[arg-type]
+        export_timeout_seconds=5,
+        trusted_client_certificate_hashes=frozenset({trusted_hash}),
+    )
+    request = ExportTraceServiceRequest()
+    request.resource_spans.add().scope_spans.add().spans.add().name = "authenticated export"
+
+    try:
+        await servicer.Export(request, FakeContext())
+    except AbortCalled as exc:
+        assert exc.code == grpc.StatusCode.UNAUTHENTICATED
+    else:
+        raise AssertionError("missing client certificate should have been rejected")
+
+    wrong_metadata = [("x-forwarded-client-cert", f"Hash={'CD' * 32}")]
+    try:
+        await servicer.Export(request, FakeContext(wrong_metadata))
+    except AbortCalled as exc:
+        assert exc.code == grpc.StatusCode.UNAUTHENTICATED
+    else:
+        raise AssertionError("untrusted client certificate should have been rejected")
+
+    trusted_metadata = [("x-forwarded-client-cert", f"Hash={trusted_hash}")]
+    await servicer.Export(request, FakeContext(trusted_metadata))
+
+    metrics = servicer.metrics_snapshot()
+    assert upstream.calls == 1
+    assert metrics["accepted_exports_total"] == 1
+    assert metrics["client_auth_rejections_total"] == 2
+    assert "traceforge_gateway_client_auth_rejections_total 2" in servicer.render_metrics()

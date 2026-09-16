@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from traceforge.gateway.client_auth import parse_certificate_hashes
 from traceforge.privacy import PrivacyPolicy, RedactionMode
 
 
@@ -37,6 +38,7 @@ class GatewayConfig:
     export_timeout_seconds: float = 10.0
     max_inflight_exports: int = 64
     admission_timeout_seconds: float = 0.25
+    trusted_client_certificate_hashes: frozenset[str] = frozenset()
     redaction_mode: RedactionMode = RedactionMode.REDACT
     redact_pii: bool = True
     detect_high_entropy: bool = True
@@ -75,6 +77,9 @@ class GatewayConfig:
             max_inflight_exports=_env_int("TRACEFORGE_MAX_INFLIGHT_EXPORTS", 64),
             admission_timeout_seconds=_env_float(
                 "TRACEFORGE_ADMISSION_TIMEOUT_SECONDS", 0.25
+            ),
+            trusted_client_certificate_hashes=parse_certificate_hashes(
+                os.getenv("TRACEFORGE_TRUSTED_CLIENT_CERT_HASHES")
             ),
             redaction_mode=mode,
             redact_pii=_env_bool("TRACEFORGE_REDACT_PII", True),
