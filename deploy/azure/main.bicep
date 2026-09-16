@@ -32,13 +32,16 @@ param enableBlobArchive bool = false
 @description('Create a dedicated VNet and attach the Container Apps environment to its delegated infrastructure subnet.')
 param enableVnetIntegration bool = false
 
+@description('Create private endpoints/private DNS for Key Vault, ADLS, and optional ADX, and disable their public network access. Requires enableVnetIntegration=true.')
+param enablePrivateEndpoints bool = false
+
 @description('Address space used when enableVnetIntegration=true.')
 param vnetAddressPrefix string = '10.42.0.0/16'
 
 @description('Dedicated Container Apps infrastructure subnet. /27 or larger is required for workload profiles.')
 param infrastructureSubnetPrefix string = '10.42.0.0/23'
 
-@description('Dedicated subnet reserved for the next private-endpoint hardening slice.')
+@description('Dedicated subnet reserved for Azure Private Endpoints.')
 param privateEndpointSubnetPrefix string = '10.42.2.0/24'
 
 @description('Gateway redaction mode: redact, drop, or tokenize.')
@@ -71,6 +74,7 @@ var viewerName = '${prefix}-viewer-${suffix}'
 var kustoClusterName = '${normalizedPrefix}adx${suffix}'
 var kustoDatabaseName = 'traceforge'
 var deployViewer = deployKusto && !empty(viewerImage) && !empty(entraClientId)
+var privateNetworkingEnabled = enableVnetIntegration && enablePrivateEndpoints
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var collectorConfig = deployKusto
@@ -127,10 +131,10 @@ resource keyVault 'Microsoft.KeyVault/vaults@2025-05-01' = {
     enableRbacAuthorization: true
     enablePurgeProtection: true
     softDeleteRetentionInDays: 90
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: privateNetworkingEnabled ? 'Disabled' : 'Enabled'
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Allow'
+      defaultAction: privateNetworkingEnabled ? 'Deny' : 'Allow'
     }
   }
 }
@@ -148,11 +152,11 @@ resource archiveStorage 'Microsoft.Storage/storageAccounts@2025-06-01' = {
     allowSharedKeyAccess: false
     isHnsEnabled: true
     minimumTlsVersion: 'TLS1_2'
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: privateNetworkingEnabled ? 'Disabled' : 'Enabled'
     supportsHttpsTrafficOnly: true
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Allow'
+      defaultAction: privateNetworkingEnabled ? 'Deny' : 'Allow'
     }
   }
 }
@@ -280,7 +284,7 @@ resource kustoCluster 'Microsoft.Kusto/clusters@2025-02-14' = if (deployKusto) {
     enablePurge: false
     enableStreamingIngest: false
     engineType: 'V2'
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: privateNetworkingEnabled ? 'Disabled' : 'Enabled'
     restrictOutboundNetworkAccess: 'Disabled'
   }
 }
@@ -331,6 +335,21 @@ resource kustoViewer 'Microsoft.Kusto/clusters/databases/principalAssignments@20
     principalType: 'App'
     role: 'Viewer'
     tenantId: tenant().tenantId
+  }
+}
+
+module privateEndpoints './private-endpoints.bicep' = {
+  name: 'traceforge-private-endpoints'
+  params: {
+    enabled: privateNetworkingEnabled
+    prefix: prefix
+    location: location
+    vnetId: networking.outputs.vnetId
+    privateEndpointSubnetId: networking.outputs.privateEndpointSubnetId
+    keyVaultId: keyVault.id
+    storageAccountId: archiveStorage.id
+    deployKusto: deployKusto
+    kustoClusterId: deployKusto ? kustoCluster.id : ''
   }
 }
 
@@ -414,6 +433,7 @@ resource collectorApp 'Microsoft.App/containerApps@2026-01-01' = {
     collectorArchiveRole
     kustoSchema
     kustoIngestor
+    privateEndpoints
   ]
 }
 
@@ -512,6 +532,7 @@ resource gatewayApp 'Microsoft.App/containerApps@2026-01-01' = {
   }
   dependsOn: [
     gatewayKeyVaultRole
+    privateEndpoints
   ]
 }
 
@@ -583,6 +604,7 @@ resource viewerApp 'Microsoft.App/containerApps@2026-01-01' = if (deployViewer) 
   dependsOn: [
     kustoSchema
     kustoViewer
+    privateEndpoints
   ]
 }
 
@@ -631,6 +653,7 @@ output viewerCallbackUrl string = deployViewer ? 'https://${viewerApp.properties
 output virtualNetworkId string = enableVnetIntegration ? networking.outputs.vnetId : ''
 output infrastructureSubnetId string = enableVnetIntegration ? networking.outputs.infrastructureSubnetId : ''
 output privateEndpointSubnetId string = enableVnetIntegration ? networking.outputs.privateEndpointSubnetId : ''
+output privateEndpointsEnabled bool = privateNetworkingEnabled
 output applicationInsightsName string = appInsights.name
 output keyVaultUri string = keyVault.properties.vaultUri
 output archiveStorageAccount string = archiveStorage.name
