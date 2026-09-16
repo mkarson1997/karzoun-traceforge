@@ -23,6 +23,16 @@ param entraClientId string = ''
 @description('Microsoft Entra tenant ID that owns the viewer app registration.')
 param entraTenantId string = tenant().tenantId
 
+@description('SHA-256 client certificate thumbprints allowed to send OTLP. A non-empty list enables required mTLS at Container Apps ingress and gateway-side thumbprint authorization.')
+param gatewayTrustedClientCertificateHashes array = []
+
+@description('Maximum number of OTLP exports admitted concurrently by one gateway replica.')
+@minValue(1)
+param gatewayMaxInflightExports int = 64
+
+@description('How long an OTLP export may wait for gateway admission capacity before RESOURCE_EXHAUSTED.')
+param gatewayAdmissionTimeoutSeconds string = '0.25'
+
 @description('Deploy Azure Data Explorer. Disabled by default because ADX has a material hourly cost.')
 param deployKusto bool = false
 
@@ -75,6 +85,7 @@ var kustoClusterName = '${normalizedPrefix}adx${suffix}'
 var kustoDatabaseName = 'traceforge'
 var deployViewer = deployKusto && !empty(viewerImage) && !empty(entraClientId)
 var privateNetworkingEnabled = enableVnetIntegration && enablePrivateEndpoints
+var gatewayMutualTlsEnabled = length(gatewayTrustedClientCertificateHashes) > 0
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var collectorConfig = deployKusto
@@ -474,6 +485,18 @@ var gatewayEnv = concat([
     name: 'TRACEFORGE_DETECT_HIGH_ENTROPY'
     value: 'true'
   }
+  {
+    name: 'TRACEFORGE_MAX_INFLIGHT_EXPORTS'
+    value: string(gatewayMaxInflightExports)
+  }
+  {
+    name: 'TRACEFORGE_ADMISSION_TIMEOUT_SECONDS'
+    value: gatewayAdmissionTimeoutSeconds
+  }
+  {
+    name: 'TRACEFORGE_TRUSTED_CLIENT_CERT_HASHES'
+    value: join(gatewayTrustedClientCertificateHashes, ',')
+  }
 ], empty(tokenizationSecretUri) ? [] : [
   {
     name: 'TRACEFORGE_TOKENIZATION_KEY'
@@ -497,7 +520,7 @@ resource gatewayApp 'Microsoft.App/containerApps@2026-01-01' = {
       ingress: {
         external: true
         allowInsecure: false
-        clientCertificateMode: 'ignore'
+        clientCertificateMode: gatewayMutualTlsEnabled ? 'require' : 'ignore'
         targetPort: 4317
         transport: 'http2'
         traffic: [
@@ -646,6 +669,7 @@ resource viewerAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if (d
 
 output gatewayFqdn string = gatewayApp.properties.configuration.ingress.fqdn
 output gatewayOtlpEndpoint string = '${gatewayApp.properties.configuration.ingress.fqdn}:443'
+output gatewayMutualTlsEnabled bool = gatewayMutualTlsEnabled
 output collectorFqdn string = collectorApp.properties.configuration.ingress.fqdn
 output viewerFqdn string = deployViewer ? viewerApp.properties.configuration.ingress.fqdn : ''
 output viewerUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}' : ''
