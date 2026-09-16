@@ -44,8 +44,11 @@ The gateway, collector, and production viewer use separate user-assigned managed
 - optional ADX-backed TraceForge viewer Container App
 - database-level ADX `Viewer` assignment for the viewer identity
 - Container Apps built-in Microsoft Entra authentication for the viewer
+- optional dedicated VNet with a delegated Container Apps infrastructure subnet
+- optional private-endpoint subnet
+- optional Private DNS + Private Endpoints for Key Vault, Storage Blob/DFS, and ADX
 
-Private endpoints are deliberately not claimed as complete yet. The current M5 profile keeps Azure service public endpoints enabled while enforcing TLS, identity/RBAC, no public blob access, and Entra authentication on the viewer. Private networking is the next hardening slice after live Azure validation.
+The production networking controls are opt-in so the low-cost engineering baseline remains easy to deploy. When both `enableVnetIntegration=true` and `enablePrivateEndpoints=true`, public network access is disabled for Key Vault, the ADLS account, and ADX, and the Container Apps environment resolves those services through linked Azure Private DNS zones.
 
 ## Runtime images
 
@@ -152,7 +155,7 @@ The viewer Container App receives its own user-assigned managed identity. That i
 
 ## Microsoft Entra setup for the viewer
 
-Create a Microsoft Entra application registration for the browser viewer and record its Application (client) ID. The current deployment uses Container Apps built-in authentication with the Entra provider, `RedirectToLoginPage`, HTTPS-only auth responses, and the configured client ID as the allowed audience.
+Create a Microsoft Entra application registration for the browser viewer and record its Application (client) ID. The deployment uses Container Apps built-in authentication with the Entra provider, `RedirectToLoginPage`, HTTPS-only auth responses, and the configured client ID as the allowed audience.
 
 For the app registration:
 
@@ -185,6 +188,58 @@ az deployment group create \
 Use `entraTenantId=<tenant-id>` only when the app registration belongs to a tenant other than the deployment tenant. Otherwise the Bicep template defaults to the current Azure tenant.
 
 Important: the first deployment can create the protected viewer before its callback URL has been added to the app registration. In that interim state the viewer remains behind authentication, but sign-in will fail until the exact `viewerCallbackUrl` output is registered. This is safer than creating an anonymous viewer merely to discover its hostname.
+
+## Private networking mode
+
+`deploy/azure/networking.bicep` creates a dedicated VNet with two subnets when `enableVnetIntegration=true`:
+
+- `aca-infrastructure`, delegated to `Microsoft.App/environments`
+- `private-endpoints`, reserved for Azure Private Endpoints
+
+Default address ranges are deliberately roomy for a demo/production-preview environment:
+
+```text
+VNet:                    10.42.0.0/16
+Container Apps subnet:   10.42.0.0/23
+Private Endpoint subnet: 10.42.2.0/24
+```
+
+They can be overridden with `vnetAddressPrefix`, `infrastructureSubnetPrefix`, and `privateEndpointSubnetPrefix`.
+
+`deploy/azure/private-endpoints.bicep` creates and links the Azure Private DNS zones required by the services TraceForge uses, then attaches Private Endpoints to the reserved subnet:
+
+- Key Vault `vault` -> `privatelink.vaultcore.azure.net`
+- Storage Blob `blob` -> `privatelink.blob.core.windows.net`
+- ADLS Gen2 `dfs` -> `privatelink.dfs.core.windows.net`
+- ADX `cluster` -> `privatelink.<region>.kusto.windows.net`
+- ADX supporting zones -> `privatelink.blob.core.windows.net`, `privatelink.queue.core.windows.net`, and `privatelink.table.core.windows.net`
+
+Enable the complete private profile with:
+
+```bash
+az deployment group create \
+  --resource-group <resource-group> \
+  --template-file deploy/azure/main.bicep \
+  --parameters \
+      gatewayImage=<registry>/traceforge:0.1.0 \
+      collectorImage=<registry>/traceforge-collector:0.1.0 \
+      viewerImage=<registry>/traceforge-viewer:0.1.0 \
+      deployKusto=true \
+      enableBlobArchive=true \
+      entraClientId=<application-client-id> \
+      enableVnetIntegration=true \
+      enablePrivateEndpoints=true
+```
+
+`enablePrivateEndpoints=true` is effective only when `enableVnetIntegration=true`. When the private profile is active, the template switches these resources to public-network disabled/deny mode:
+
+- Key Vault
+- TraceForge ADLS Gen2 account
+- Azure Data Explorer, when deployed
+
+The gateway and Entra-protected viewer still have deliberate external Container Apps ingress because they are the product's public entry surfaces. The collector remains internal-only.
+
+The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, and `privateEndpointsEnabled` so operators can verify the selected topology after deployment.
 
 ## ADX schema
 
@@ -232,18 +287,21 @@ The gateway identity receives Key Vault Secrets User. The secret value is never 
 - Collector archive access uses managed identity and Azure RBAC.
 - Kusto ingestion uses managed identity and database-level `Ingestor`, not cluster admin.
 - Key Vault uses Azure RBAC and purge protection.
+- Private mode disables public access to Key Vault, ADLS, and ADX and resolves them through linked Private DNS zones.
 - Raw prompt/source/body fields are still removed by the same privacy kernel before the collector receives them.
 - User-controlled viewer search values are passed to ADX as query parameters instead of being concatenated into KQL.
 
-## Remaining M5 work
+## Remaining M5 validation
 
-The Azure production profile now has the gateway, collector, Azure Monitor sink, optional ADX ingestion, optional archive sink, ADX-backed viewer, least-privilege viewer identity, and Entra edge authentication in code.
+The Azure production profile now has the gateway, collector, Azure Monitor sink, optional ADX ingestion, optional archive sink, ADX-backed viewer, least-privilege viewer identity, Entra edge authentication, VNet integration, Private DNS, and service Private Endpoints in code.
 
-M5 is not considered fully production-validated until the remaining items are complete:
+M5 is not marked fully production-validated until a real subscription deployment verifies:
 
-- deploy the template into a real Azure subscription and run end-to-end validation
-- add private endpoints/VNet hardening and shut down unnecessary public service endpoints
-- exercise viewer authentication and ADX permissions with real tenant identities
-- document operational rollback and deployment verification output
+- Bicep deployment success for the selected Azure region and subscription policies
+- private DNS resolution from the Container Apps environment
+- Key Vault, Storage, and ADX connectivity with public access disabled
+- viewer Entra sign-in and callback configuration
+- end-to-end sanitized OTLP ingestion and ADX query behavior
+- rollback/redeployment behavior
 
 M6 then adds inbound mTLS policy/certificate rotation, rate controls, audit policy, SBOM/scanning, and failure/load testing.

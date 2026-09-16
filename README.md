@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4 are implemented in the local reference stack. M5 now includes the Azure infrastructure/runtime foundation, ADX-backed production viewer, dedicated viewer identity, and Microsoft Entra edge authentication. Private networking and live Azure validation remain.
+> Status: engineering preview. M0-M4 are complete in the local reference stack. The M5 Azure production profile now includes ADX-backed viewing, Microsoft Entra authentication, VNet integration, Private DNS, and optional Private Endpoints with public-network shutdown for sensitive PaaS dependencies. Real-subscription validation remains.
 
 ## Why TraceForge
 
@@ -24,22 +24,21 @@ TraceForge Privacy Gateway
               v
 Central OpenTelemetry Collector
               |
-              v
-TraceForge Trace Store
-  defense-in-depth scrub -> SQLite WAL
-              |
-              v
-Searchable read-only API + Trace Viewer
-              |
-              v
-Sanitized JSONL export
+              +----> Azure Monitor / Application Insights
+              +----> Azure Data Explorer / Kusto
+              +----> sanitized ADLS / Blob archive
+                           |
+                           v
+                Entra-protected Trace Viewer
 ```
 
-The Azure production profile preserves the same privacy boundary while adding Azure Container Apps, separate managed identities, RBAC-enabled Key Vault, Application Insights, optional ADX/Kusto, optional ADLS/Blob sanitized archives, and an Entra-protected ADX-backed viewer.
+The local profile uses SQLite WAL behind the same read-only viewer contract. The hardened Azure profile can place Container Apps inside a dedicated VNet and route Key Vault, ADLS, and ADX through Azure Private Link.
 
 See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/azure-deployment.md](docs/azure-deployment.md), and [docs/roadmap.md](docs/roadmap.md).
 
 ## Implemented
+
+### Privacy and OTLP
 
 - Recursive telemetry/JSON scrubbing
 - GitHub token, AWS access key, JWT, bearer token, and generic secret detection
@@ -51,23 +50,39 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 - Trace, event, link, resource, and instrumentation-scope attribute scrubbing
 - Non-sensitive privacy audit counters propagated with an opaque export ID
 - `/healthz` and `/readyz` gateway endpoints
-- Central OpenTelemetry Collector with queued/retried delivery to the local store
-- SQLite WAL trace store with idempotent `(trace_id, span_id)` upserts
-- Task -> session -> trace correlation
+
+### Correlation and local viewer
+
+- Central OpenTelemetry Collector with queued/retried delivery
+- SQLite WAL reference trace store with idempotent `(trace_id, span_id)` upserts
+- task -> session -> trace correlation
 - Read-only JSON API and browser trace timeline
 - Sanitized span search across IDs, names, agent/service fields, attributes, and events
-- Service, agent, and status filters in the read-only API
+- Service, agent, and status filters
 - Sanitized JSONL export over HTTP and the `traceforge-export` CLI
+- Defense-in-depth scrubbing at storage ingress
 - Synthetic coding-agent generator containing deliberate privacy test vectors
-- Defense-in-depth scrub at storage ingress
 - CI regression tests proving fake prompts, source code, email addresses, and credentials do not reach persistent storage or exports
-- PowerShell and POSIX one-command demo bootstrap scripts
-- Bicep Azure production foundation with Container Apps, managed identities, Key Vault, Log Analytics, Application Insights, ADLS Gen2, and optional ADX
-- Pinned OpenTelemetry Collector Contrib Azure profiles for Monitor, ADX, and opt-in Blob archival
-- ADX-backed production repository using parameterized KQL
-- Dedicated viewer Container App and user-assigned managed identity
-- Database-level ADX `Viewer` assignment separate from collector `Ingestor`
-- Microsoft Entra built-in authentication with redirect-to-login behavior on the production viewer
+
+### Azure production profile
+
+- Bicep infrastructure with Azure Container Apps
+- Separate gateway, collector, and viewer managed identities
+- RBAC-enabled Key Vault with purge protection
+- Workspace-based Application Insights
+- Optional ADX/Kusto ingestion with database-level `Ingestor`
+- ADX-backed viewer using parameterized KQL
+- Dedicated viewer managed identity with database-level `Viewer`
+- Microsoft Entra built-in authentication in front of the production viewer
+- ADLS Gen2 sanitized archive containers
+- Pinned OpenTelemetry Collector Contrib Azure exporter profiles
+- Optional dedicated VNet with delegated Container Apps infrastructure subnet
+- Dedicated subnet for Private Endpoints
+- Linked Azure Private DNS zones
+- Key Vault `vault` Private Endpoint
+- Storage `blob` and `dfs` Private Endpoints
+- Optional ADX `cluster` Private Endpoint plus required Kusto/Blob/Queue/Table private DNS zones
+- Public network disabled for Key Vault, ADLS, and ADX when private mode is enabled
 
 ## One-command local demo
 
@@ -93,8 +108,6 @@ Open the viewer at:
 ```text
 http://localhost:8081
 ```
-
-The viewer includes session browsing, span/attribute search, privacy finding totals, trace waterfalls, and a one-click sanitized JSONL export.
 
 Gateway health endpoints:
 
@@ -125,12 +138,6 @@ Requires Python 3.11+.
 python -m venv .venv
 source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
 pip install -e '.[dev]'
-pytest
-```
-
-Run quality checks:
-
-```bash
 ruff check .
 pytest
 ```
@@ -174,8 +181,6 @@ GET /api/traces/{trace_id}
 
 Persistent storage is never intended to be the first scrub point.
 
-The expected path is:
-
 ```text
 agent -> privacy gateway -> collector -> storage/analytics
 ```
@@ -192,11 +197,11 @@ export TRACEFORGE_GATEWAY_INSECURE=false
 otelcol-contrib --config deploy/otel/edge-collector.yaml
 ```
 
-For production transport, configure a trusted CA and client certificate/key for mTLS. Production images and collector artifacts are pinned or validated as part of the security track.
+For production transport, configure a trusted CA and client certificate/key for mTLS.
 
 ## Azure production profile
 
-The M5 infrastructure entry point is `deploy/azure/main.bicep`. Build the three runtime images:
+Build the three runtime images:
 
 ```bash
 docker build -t <registry>/traceforge:0.1.0 .
@@ -204,13 +209,13 @@ docker build -f Dockerfile.collector -t <registry>/traceforge-collector:0.1.0 .
 docker build -f Dockerfile.viewer -t <registry>/traceforge-viewer:0.1.0 .
 ```
 
-Validate the template:
+Validate the complete Bicep graph:
 
 ```bash
 az bicep build --file deploy/azure/main.bicep
 ```
 
-Deploy the baseline, which uses Application Insights as the centralized backend:
+Low-cost baseline:
 
 ```bash
 az deployment group create \
@@ -221,13 +226,44 @@ az deployment group create \
       collectorImage=<registry>/traceforge-collector:0.1.0
 ```
 
-ADX is opt-in with `deployKusto=true`. The protected production viewer is deployed when `deployKusto=true`, `viewerImage` is supplied, and `entraClientId` is supplied. Its managed identity receives only the ADX database `Viewer` role, while Container Apps built-in authentication redirects unauthenticated browser requests to Microsoft Entra ID.
+Protected ADX viewer:
 
-Sanitized ADLS/Blob archival is independently opt-in with `enableBlobArchive=true`; it is not the default because the upstream Azure Blob exporter is still alpha. See [docs/azure-deployment.md](docs/azure-deployment.md) for deployment, Entra redirect URI setup, cost, identity, and security details.
+```bash
+az deployment group create \
+  --resource-group <resource-group> \
+  --template-file deploy/azure/main.bicep \
+  --parameters \
+      gatewayImage=<registry>/traceforge:0.1.0 \
+      collectorImage=<registry>/traceforge-collector:0.1.0 \
+      viewerImage=<registry>/traceforge-viewer:0.1.0 \
+      deployKusto=true \
+      entraClientId=<application-client-id>
+```
+
+Full private-network profile:
+
+```bash
+az deployment group create \
+  --resource-group <resource-group> \
+  --template-file deploy/azure/main.bicep \
+  --parameters \
+      gatewayImage=<registry>/traceforge:0.1.0 \
+      collectorImage=<registry>/traceforge-collector:0.1.0 \
+      viewerImage=<registry>/traceforge-viewer:0.1.0 \
+      deployKusto=true \
+      enableBlobArchive=true \
+      entraClientId=<application-client-id> \
+      enableVnetIntegration=true \
+      enablePrivateEndpoints=true
+```
+
+The protected viewer is deployed only when ADX is enabled and both `viewerImage` and `entraClientId` are supplied. Private Endpoints are effective only together with VNet integration. See [docs/azure-deployment.md](docs/azure-deployment.md) for redirect URI setup, network topology, identity details, and deployment notes.
 
 ## Delivery plan
 
-M0-M4 are implemented in the reference stack. M5 now includes IaC, Container Apps gateway/collector/viewer, managed identities, Key Vault, Azure Monitor, ADLS infrastructure, optional ADX ingestion, the ADX query backend, and Entra viewer authentication. Remaining M5 work is private networking plus live Azure deployment validation. M6 then hardens security and reliability, and M7 packages adapters and organization controls for product use.
+M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
+
+M6 hardens security and reliability with inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 packages agent adapters, organization policy, multi-tenancy, and commercial deployment workflows.
 
 ## Commercial status
 

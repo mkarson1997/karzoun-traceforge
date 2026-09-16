@@ -56,8 +56,11 @@
 - [x] ADLS Gen2 archive containers and opt-in managed-identity Blob exporter profile
 - [x] ADX-backed read-only viewer repository
 - [x] Viewer managed identity with database-level ADX Viewer role
-- [ ] Private endpoints, VNet hardening, and public-network shutdown
-- [ ] Live deployment validation in an Azure subscription
+- [x] Optional Container Apps VNet integration with a delegated infrastructure subnet
+- [x] Dedicated private-endpoint subnet and linked Azure Private DNS zones
+- [x] Key Vault, Blob/DFS, and optional ADX private endpoints
+- [x] Public-network shutdown for Key Vault, ADLS, and ADX when private mode is enabled
+- [ ] Live deployment and DNS/auth/connectivity validation in an Azure subscription
 
 ## M6 - Security and reliability
 

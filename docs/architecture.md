@@ -28,6 +28,8 @@ flowchart LR
   J --> D
 ```
 
+In the hardened Azure profile, the Container Apps environment is attached to a dedicated VNet. Key Vault, Storage Blob/DFS, and optional ADX are reached through Azure Private Endpoints and linked Private DNS zones while their public data-plane network access is disabled.
+
 ## Design principles
 
 - **Privacy before persistence**: durable centralized storage must never receive raw sensitive payloads.
@@ -36,7 +38,8 @@ flowchart LR
 - **No raw prompt or source capture by default**: prompt, completion, source content, request bodies, response bodies, and database statements are dropped unless an explicit policy enables a safer derived representation.
 - **Stable correlation without plaintext**: optional HMAC tokenization allows equality correlation while hiding the original value.
 - **Least privilege**: ingestion identities cannot query by default; viewer identities receive query-only database permissions and do not mutate ingestion policy.
-- **Portable core, Azure production profile**: the privacy core and OTLP pipeline remain portable, while the reference production deployment targets Azure Container Apps, Azure Monitor, ADX/Kusto, Blob/ADLS, Key Vault, and Entra ID.
+- **Private PaaS dependencies**: production mode can remove public data-plane reachability for Key Vault, ADLS, and ADX while keeping only the intended gateway/viewer application surfaces exposed.
+- **Portable core, Azure production profile**: the privacy core and OTLP pipeline remain portable, while the reference production deployment targets Azure Container Apps, Azure Monitor, ADX/Kusto, Blob/ADLS, Key Vault, Entra ID, VNet integration, and Azure Private Link.
 
 ## Local reference profile
 
@@ -64,7 +67,7 @@ The trace store scrubs again at ingress as defense in depth. Privacy findings ar
 
 M5 is implemented in `deploy/azure/main.bicep` as an opt-in production profile.
 
-The current Azure slice deploys:
+The Azure slice can deploy:
 
 - Azure Container Apps environment
 - external HTTP/2 TraceForge privacy gateway
@@ -78,12 +81,27 @@ The current Azure slice deploys:
 - ADX-backed TraceForge viewer Container App when ADX, viewer image, and Entra client ID are supplied
 - database-level ADX `Viewer` role for the viewer identity
 - Container Apps built-in Microsoft Entra authentication on the production viewer
+- optional dedicated VNet and delegated Container Apps infrastructure subnet
+- dedicated private-endpoint subnet
+- linked Azure Private DNS zones
+- Private Endpoints for Key Vault, Storage Blob/DFS, and optional ADX
 
 The collector image is pinned to OpenTelemetry Collector Contrib and can select one of four profiles at deployment time: Azure Monitor only, Azure Monitor plus Blob archive, Azure Monitor plus ADX, or Azure Monitor plus ADX plus Blob archive.
 
 ADX is opt-in because of cost. Blob archival is also opt-in because the upstream OpenTelemetry Azure Blob exporter is still alpha. The production baseline therefore starts with Application Insights and adds the other sinks explicitly.
 
-The current Azure networking slice keeps service public endpoints enabled while requiring TLS and RBAC. The production viewer does not expose anonymous trace access: Container Apps built-in authentication redirects unauthenticated browser requests to Microsoft Entra ID before traffic reaches the viewer application. Private endpoints and VNet hardening remain an explicit M5 security task rather than being implied by the template.
+### Azure network topology
+
+With `enableVnetIntegration=true`, the Container Apps environment uses the delegated `aca-infrastructure` subnet. The separate `private-endpoints` subnet is reserved for Azure Private Link.
+
+With both `enableVnetIntegration=true` and `enablePrivateEndpoints=true`:
+
+- Key Vault public network access is disabled and its `vault` Private Endpoint is mapped through `privatelink.vaultcore.azure.net`.
+- ADLS public network access is disabled and both `blob` and `dfs` endpoints are private.
+- ADX public network access is disabled when ADX is deployed. Its `cluster` Private Endpoint is associated with the regional Kusto zone plus the Blob, Queue, and Table zones required by ADX Private Link.
+- Container Apps waits for the private endpoint module before starting gateway, collector, or viewer revisions that depend on those resources.
+
+The privacy gateway remains externally reachable because it is the product's intended OTLP ingestion surface. The production viewer also retains external HTTPS ingress, but Container Apps built-in authentication redirects unauthenticated users to Microsoft Entra ID before application traffic is served. The central collector remains internal-only.
 
 ## Components
 
@@ -116,6 +134,6 @@ This separation keeps human authentication, application query authorization, and
 
 ## Current milestone
 
-M0-M4 are complete in the reference stack. M5 now includes Azure IaC, Container Apps gateway/collector/viewer, separate managed identities, Key Vault, Azure Monitor, optional ADX ingestion, optional sanitized Blob archive, ADX-backed viewer queries, and Microsoft Entra protection for the production viewer.
+M0-M4 are complete in the reference stack. M5 now includes Azure IaC, Container Apps gateway/collector/viewer, separate managed identities, Key Vault, Azure Monitor, optional ADX ingestion, optional sanitized Blob archive, ADX-backed viewer queries, Microsoft Entra protection, VNet integration, Private DNS, Private Endpoints, and public-network shutdown for sensitive PaaS dependencies when private mode is selected.
 
-Remaining M5 work is private networking/VNet hardening and live subscription deployment validation. M6 then adds inbound mTLS rotation, admission controls, audit policy, SBOM/scanning, and failure/load testing.
+The remaining M5 item is live subscription validation of deployment, DNS, Entra callback behavior, managed-identity access, and end-to-end sanitized telemetry flow. M6 then adds inbound mTLS rotation, admission controls, audit policy, SBOM/scanning, and failure/load testing.
