@@ -17,6 +17,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
     add_TraceServiceServicer_to_server,
 )
 
+from traceforge.audit import emit_audit_event, stable_ref
 from traceforge.gateway.client_auth import (
     client_certificate_authorized,
     forwarded_client_certificate_hash,
@@ -72,34 +73,54 @@ class PrivacyGateway(TraceServiceServicer):
 
     async def Export(self, request, context):  # noqa: N802 - gRPC generated method name
         metadata = context.invocation_metadata()
-        if self._trusted_client_certificate_hashes and not client_certificate_authorized(
+        trust_forwarded_certificate = bool(self._trusted_client_certificate_hashes)
+        presented_certificate_hash = (
+            forwarded_client_certificate_hash(metadata)
+            if trust_forwarded_certificate
+            else None
+        )
+        client_key = _rate_limit_client_key(
+            context,
+            metadata,
+            trust_forwarded_certificate=trust_forwarded_certificate,
+        )
+        client_ref = stable_ref(client_key)
+
+        if trust_forwarded_certificate and not client_certificate_authorized(
             metadata,
             self._trusted_client_certificate_hashes,
         ):
             self._client_auth_rejections_total += 1
             LOGGER.warning("trace export rejected by client certificate authorization")
+            emit_audit_event(
+                "otlp.client_auth",
+                "denied",
+                component="gateway",
+                actor_ref=stable_ref(presented_certificate_hash),
+                reason="certificate_missing_or_untrusted",
+            )
             await context.abort(
                 grpc.StatusCode.UNAUTHENTICATED,
                 "client certificate is missing or not trusted",
             )
             return ExportTraceServiceResponse()
 
-        if self._rate_limiter.enabled:
-            client_key = _rate_limit_client_key(
-                context,
-                metadata,
-                trust_forwarded_certificate=bool(
-                    self._trusted_client_certificate_hashes
-                ),
+        if self._rate_limiter.enabled and not self._rate_limiter.allow(client_key):
+            self._rate_limit_rejections_total += 1
+            LOGGER.warning("trace export rejected by per-client rate limit")
+            emit_audit_event(
+                "otlp.rate_limit",
+                "denied",
+                component="gateway",
+                actor_ref=client_ref,
+                limit_per_minute=self._rate_limiter.limit_per_minute,
+                reason="client_rate_exceeded_or_tracker_full",
             )
-            if not self._rate_limiter.allow(client_key):
-                self._rate_limit_rejections_total += 1
-                LOGGER.warning("trace export rejected by per-client rate limit")
-                await context.abort(
-                    grpc.StatusCode.RESOURCE_EXHAUSTED,
-                    "per-client export rate limit exceeded; retry with backoff",
-                )
-                return ExportTraceServiceResponse()
+            await context.abort(
+                grpc.StatusCode.RESOURCE_EXHAUSTED,
+                "per-client export rate limit exceeded; retry with backoff",
+            )
+            return ExportTraceServiceResponse()
 
         try:
             await asyncio.wait_for(
@@ -112,6 +133,15 @@ class PrivacyGateway(TraceServiceServicer):
                 "trace export rejected by admission control inflight=%d limit=%d",
                 self._inflight_exports,
                 self._max_inflight_exports,
+            )
+            emit_audit_event(
+                "otlp.admission",
+                "denied",
+                component="gateway",
+                actor_ref=client_ref,
+                inflight=self._inflight_exports,
+                limit=self._max_inflight_exports,
+                reason="capacity_exhausted",
             )
             await context.abort(
                 grpc.StatusCode.RESOURCE_EXHAUSTED,
@@ -153,6 +183,13 @@ class PrivacyGateway(TraceServiceServicer):
             except grpc.aio.AioRpcError as exc:
                 self._upstream_failures_total += 1
                 LOGGER.warning("upstream OTLP export failed: %s", exc.code())
+                emit_audit_event(
+                    "otlp.upstream",
+                    "failed",
+                    component="gateway",
+                    actor_ref=client_ref,
+                    status=str(exc.code()),
+                )
                 await context.abort(grpc.StatusCode.UNAVAILABLE, "upstream OTLP export failed")
             return ExportTraceServiceResponse()
         finally:

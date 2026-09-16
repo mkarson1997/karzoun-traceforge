@@ -21,6 +21,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
     add_TraceServiceServicer_to_server,
 )
 
+from traceforge.audit import emit_audit_event, stable_ref
 from traceforge.gateway.otel_scrub import scrub_trace_export_request
 from traceforge.privacy import Scrubber
 from traceforge.store.repository import TraceRepository
@@ -66,6 +67,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        actor_ref = self._actor_ref()
 
         if path == "/":
             self._send_html(VIEWER_HTML)
@@ -86,37 +88,81 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/search":
             status_value = _optional_int_param(query, "status")
-            self._send_json(
-                self.server.repository.search_spans(
-                    _text_param(query, "q"),
-                    service=_optional_text_param(query, "service"),
-                    agent=_optional_text_param(query, "agent"),
-                    status_code=status_value,
-                    limit=_int_param(query, "limit", 100),
-                )
+            results = self.server.repository.search_spans(
+                _text_param(query, "q"),
+                service=_optional_text_param(query, "service"),
+                agent=_optional_text_param(query, "agent"),
+                status_code=status_value,
+                limit=_int_param(query, "limit", 100),
             )
+            emit_audit_event(
+                "viewer.search",
+                "success",
+                component="viewer",
+                actor_ref=actor_ref,
+                results=len(results),
+                has_query=bool(_text_param(query, "q")),
+                has_service_filter=_optional_text_param(query, "service") is not None,
+                has_agent_filter=_optional_text_param(query, "agent") is not None,
+                has_status_filter=status_value is not None,
+            )
+            self._send_json(results)
             return
         if path == "/api/export.jsonl":
+            session_id = _optional_text_param(query, "session")
+            task_id = _optional_text_param(query, "task")
             rows = self.server.repository.export_spans(
-                session_id=_optional_text_param(query, "session"),
-                task_id=_optional_text_param(query, "task"),
+                session_id=session_id,
+                task_id=task_id,
                 limit=_int_param(query, "limit", 10_000),
+            )
+            emit_audit_event(
+                "viewer.dataset_export",
+                "success",
+                component="viewer",
+                actor_ref=actor_ref,
+                rows=len(rows),
+                has_session_filter=session_id is not None,
+                has_task_filter=task_id is not None,
             )
             self._send_jsonl(rows, filename="traceforge-sanitized-spans.jsonl")
             return
         if path.startswith("/api/sessions/") and path.endswith("/traces"):
             encoded = path[len("/api/sessions/") : -len("/traces")].strip("/")
-            self._send_json(self.server.repository.list_traces_for_session(unquote(encoded)))
+            session_id = unquote(encoded)
+            traces = self.server.repository.list_traces_for_session(session_id)
+            emit_audit_event(
+                "viewer.session_traces_read",
+                "success",
+                component="viewer",
+                actor_ref=actor_ref,
+                session_ref=stable_ref(session_id),
+                traces=len(traces),
+            )
+            self._send_json(traces)
             return
         if path.startswith("/api/traces/"):
             trace_id = unquote(path.removeprefix("/api/traces/")).strip("/")
             trace = self.server.repository.get_trace(trace_id)
+            emit_audit_event(
+                "viewer.trace_read",
+                "not_found" if trace is None else "success",
+                component="viewer",
+                actor_ref=actor_ref,
+                trace_ref=stable_ref(trace_id),
+            )
             if trace is None:
                 self._send_json({"error": "trace not found"}, status=HTTPStatus.NOT_FOUND)
             else:
                 self._send_json(trace)
             return
         self._send_json({"error": "not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _actor_ref(self) -> str | None:
+        principal_id = self.headers.get("X-MS-CLIENT-PRINCIPAL-ID")
+        if principal_id:
+            return stable_ref(principal_id)
+        return None
 
     def _send_json(self, value: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

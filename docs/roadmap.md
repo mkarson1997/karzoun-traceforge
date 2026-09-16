@@ -66,7 +66,7 @@
 
 - [x] Inbound mTLS requirement with SHA-256 client-certificate allowlist and overlap-based rotation
 - [x] Bounded per-client sliding-window rate limiting with abuse/backpressure metrics
-- [ ] Structured audit logging
+- [x] Structured privacy-safe audit events for gateway security decisions and viewer data access
 - [ ] Retention policies
 - [x] CodeQL static analysis
 - [x] Resolved-dependency vulnerability auditing and Dependabot updates
