@@ -47,6 +47,10 @@ param deployKusto bool = false
 @description('Enable sanitized OTLP JSON archives in ADLS/Blob. The OpenTelemetry azureblob exporter is alpha, so this is opt-in.')
 param enableBlobArchive bool = false
 
+@description('Delete sanitized archive blobs after this many days when Blob archival is enabled.')
+@minValue(1)
+param archiveRetentionDays int = 30
+
 @description('Create a dedicated VNet and attach the Container Apps environment to its delegated infrastructure subnet.')
 param enableVnetIntegration bool = false
 
@@ -217,6 +221,46 @@ resource sanitizedLogs 'Microsoft.Storage/storageAccounts/blobServices/container
   properties: {
     publicAccess: 'None'
   }
+}
+
+resource archiveLifecycle 'Microsoft.Storage/storageAccounts/managementPolicies@2024-01-01' = if (enableBlobArchive) {
+  parent: archiveStorage
+  name: 'default'
+  properties: {
+    policy: {
+      rules: [
+        {
+          enabled: true
+          name: 'expire-sanitized-archives'
+          type: 'Lifecycle'
+          definition: {
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterModificationGreaterThan: archiveRetentionDays
+                }
+              }
+            }
+            filters: {
+              blobTypes: [
+                'blockBlob'
+              ]
+              prefixMatch: [
+                'sanitized-traces/'
+                'sanitized-metrics/'
+                'sanitized-logs/'
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+  dependsOn: [
+    sanitizedTraces
+    sanitizedMetrics
+    sanitizedLogs
+  ]
 }
 
 resource collectorIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -452,6 +496,7 @@ resource collectorApp 'Microsoft.App/containerApps@2026-01-01' = {
     collectorArchiveRole
     kustoSchema
     kustoIngestor
+    archiveLifecycle
     privateEndpoints
   ]
 }
@@ -698,5 +743,6 @@ output privateEndpointsEnabled bool = privateNetworkingEnabled
 output applicationInsightsName string = appInsights.name
 output keyVaultUri string = keyVault.properties.vaultUri
 output archiveStorageAccount string = archiveStorage.name
+output archiveRetentionDays int = archiveRetentionDays
 output kustoClusterUri string = deployKusto ? kustoCluster.properties.uri : ''
 output kustoDatabase string = deployKusto ? kustoDatabase.name : ''
