@@ -1,0 +1,73 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:python
+
+  dependency-audit:
+    name: Dependency audit and SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Resolve all project dependency sets
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pip-tools pip-audit
+          pip-compile --all-extras --strip-extras --output-file requirements-audit.txt pyproject.toml
+      - name: Audit resolved dependencies
+        run: pip-audit --strict --progress-spinner off -r requirements-audit.txt
+      - name: Generate CycloneDX SBOM
+        if: always()
+        run: pip-audit --progress-spinner off -r requirements-audit.txt --format cyclonedx-json --output sbom.cdx.json || test -s sbom.cdx.json
+      - name: Upload security evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traceforge-security-evidence
+          path: |
+            requirements-audit.txt
+            sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
+  secret-scan:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan committed history for secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
