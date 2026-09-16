@@ -1,4 +1,4 @@
-FROM otel/opentelemetry-collector-contrib:0.160.0
+FROM otel/opentelemetry-collector-contrib:0.161.0
 
 COPY deploy/otel/azure-monitor-collector.yaml /etc/otelcol-contrib/azure-monitor.yaml
 COPY deploy/otel/azure-monitor-blob-collector.yaml /etc/otelcol-contrib/azure-monitor-blob.yaml
