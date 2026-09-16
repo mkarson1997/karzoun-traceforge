@@ -26,15 +26,27 @@ class CaptureService(TraceServiceServicer):
         return ExportTraceServiceResponse()
 
 
-class BlockingCaptureService(TraceServiceServicer):
+class BlockingUpstreamStub:
     def __init__(self) -> None:
         self.entered = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def Export(self, request, context):  # noqa: N802
+    async def Export(self, request, timeout=None):  # noqa: N802, ARG002
         self.entered.set()
         await self.release.wait()
         return ExportTraceServiceResponse()
+
+
+class AbortCalled(Exception):
+    def __init__(self, code: grpc.StatusCode, details: str) -> None:
+        super().__init__(details)
+        self.code = code
+        self.details = details
+
+
+class FakeContext:
+    async def abort(self, code: grpc.StatusCode, details: str):
+        raise AbortCalled(code, details)
 
 
 def test_gateway_forwards_only_sanitized_request() -> None:
@@ -97,56 +109,35 @@ async def _exercise_gateway() -> None:
 
 
 async def _exercise_backpressure() -> None:
-    upstream = grpc.aio.server()
-    blocking = BlockingCaptureService()
-    add_TraceServiceServicer_to_server(blocking, upstream)
-    upstream_port = upstream.add_insecure_port("127.0.0.1:0")
-    await upstream.start()
-
-    upstream_channel = grpc.aio.insecure_channel(f"127.0.0.1:{upstream_port}")
-    gateway = grpc.aio.server()
+    upstream = BlockingUpstreamStub()
     servicer = PrivacyGateway(
         scrubber=Scrubber(),
-        upstream_stub=TraceServiceStub(upstream_channel),
+        upstream_stub=upstream,  # type: ignore[arg-type]
         export_timeout_seconds=5,
         max_inflight_exports=1,
-        admission_timeout_seconds=0.05,
+        admission_timeout_seconds=0.01,
     )
-    add_TraceServiceServicer_to_server(servicer, gateway)
-    gateway_port = gateway.add_insecure_port("127.0.0.1:0")
-    await gateway.start()
-
-    client_channel = grpc.aio.insecure_channel(f"127.0.0.1:{gateway_port}")
-    stub = TraceServiceStub(client_channel)
     request = ExportTraceServiceRequest()
     request.resource_spans.add().scope_spans.add().spans.add().name = "blocking export"
 
-    first = asyncio.create_task(stub.Export(request, timeout=5))
+    first = asyncio.create_task(servicer.Export(request, FakeContext()))
+    await asyncio.wait_for(upstream.entered.wait(), timeout=1)
+    assert servicer.metrics_snapshot()["inflight_exports"] == 1
+
     try:
-        await asyncio.wait_for(blocking.entered.wait(), timeout=1)
-        assert servicer.metrics_snapshot()["inflight_exports"] == 1
+        await servicer.Export(request, FakeContext())
+    except AbortCalled as exc:
+        assert exc.code == grpc.StatusCode.RESOURCE_EXHAUSTED
+        assert "retry with backoff" in exc.details
+    else:
+        raise AssertionError("second export should have been rejected")
 
-        try:
-            await stub.Export(request, timeout=1)
-        except grpc.aio.AioRpcError as exc:
-            assert exc.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
-        else:
-            raise AssertionError("second export should have been rejected")
+    metrics = servicer.metrics_snapshot()
+    assert metrics["accepted_exports_total"] == 1
+    assert metrics["rejected_exports_total"] == 1
+    assert metrics["inflight_exports"] == 1
+    assert "traceforge_gateway_backpressure_active 1" in servicer.render_metrics()
 
-        metrics = servicer.metrics_snapshot()
-        assert metrics["accepted_exports_total"] == 1
-        assert metrics["rejected_exports_total"] == 1
-        assert metrics["inflight_exports"] == 1
-        assert "traceforge_gateway_backpressure_active 1" in servicer.render_metrics()
-
-        blocking.release.set()
-        await first
-        assert servicer.metrics_snapshot()["inflight_exports"] == 0
-    finally:
-        blocking.release.set()
-        if not first.done():
-            await first
-        await client_channel.close()
-        await gateway.stop(grace=0)
-        await upstream_channel.close()
-        await upstream.stop(grace=0)
+    upstream.release.set()
+    await first
+    assert servicer.metrics_snapshot()["inflight_exports"] == 0
