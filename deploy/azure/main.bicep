@@ -29,6 +29,18 @@ param deployKusto bool = false
 @description('Enable sanitized OTLP JSON archives in ADLS/Blob. The OpenTelemetry azureblob exporter is alpha, so this is opt-in.')
 param enableBlobArchive bool = false
 
+@description('Create a dedicated VNet and attach the Container Apps environment to its delegated infrastructure subnet.')
+param enableVnetIntegration bool = false
+
+@description('Address space used when enableVnetIntegration=true.')
+param vnetAddressPrefix string = '10.42.0.0/16'
+
+@description('Dedicated Container Apps infrastructure subnet. /27 or larger is required for workload profiles.')
+param infrastructureSubnetPrefix string = '10.42.0.0/23'
+
+@description('Dedicated subnet reserved for the next private-endpoint hardening slice.')
+param privateEndpointSubnetPrefix string = '10.42.2.0/24'
+
 @description('Gateway redaction mode: redact, drop, or tokenize.')
 @allowed([
   'redact'
@@ -64,6 +76,18 @@ var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var collectorConfig = deployKusto
   ? (enableBlobArchive ? '/etc/otelcol-contrib/azure-kusto-blob.yaml' : '/etc/otelcol-contrib/azure-kusto.yaml')
   : (enableBlobArchive ? '/etc/otelcol-contrib/azure-monitor-blob.yaml' : '/etc/otelcol-contrib/azure-monitor.yaml')
+
+module networking './networking.bicep' = {
+  name: 'traceforge-networking'
+  params: {
+    enabled: enableVnetIntegration
+    prefix: prefix
+    location: location
+    vnetAddressPrefix: vnetAddressPrefix
+    infrastructureSubnetPrefix: infrastructureSubnetPrefix
+    privateEndpointSubnetPrefix: privateEndpointSubnetPrefix
+  }
+}
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2025-07-01' = {
   name: logAnalyticsName
@@ -217,10 +241,8 @@ resource collectorArchiveRole 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-resource containerEnvironment 'Microsoft.App/managedEnvironments@2026-01-01' = {
-  name: environmentName
-  location: location
-  properties: {
+var environmentProperties = union(
+  {
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -228,7 +250,21 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2026-01-01' = {
         sharedKey: logAnalytics.listKeys().primarySharedKey
       }
     }
-  }
+  },
+  enableVnetIntegration
+    ? {
+        vnetConfiguration: {
+          infrastructureSubnetId: networking.outputs.infrastructureSubnetId
+          internal: false
+        }
+      }
+    : {}
+)
+
+resource containerEnvironment 'Microsoft.App/managedEnvironments@2026-01-01' = {
+  name: environmentName
+  location: location
+  properties: environmentProperties
 }
 
 resource kustoCluster 'Microsoft.Kusto/clusters@2025-02-14' = if (deployKusto) {
@@ -592,6 +628,9 @@ output collectorFqdn string = collectorApp.properties.configuration.ingress.fqdn
 output viewerFqdn string = deployViewer ? viewerApp.properties.configuration.ingress.fqdn : ''
 output viewerUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}' : ''
 output viewerCallbackUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}/.auth/login/aad/callback' : ''
+output virtualNetworkId string = enableVnetIntegration ? networking.outputs.vnetId : ''
+output infrastructureSubnetId string = enableVnetIntegration ? networking.outputs.infrastructureSubnetId : ''
+output privateEndpointSubnetId string = enableVnetIntegration ? networking.outputs.privateEndpointSubnetId : ''
 output applicationInsightsName string = appInsights.name
 output keyVaultUri string = keyVault.properties.vaultUri
 output archiveStorageAccount string = archiveStorage.name
