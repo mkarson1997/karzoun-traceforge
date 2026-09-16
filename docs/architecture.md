@@ -10,7 +10,7 @@ TraceForge is a privacy-first telemetry pipeline for AI coding agents and develo
 2. **Edge collector**: local OpenTelemetry receiver and batching layer. It only listens on loopback by default.
 3. **Privacy gateway**: mandatory boundary where policy, secret detection, tokenization, and redaction are enforced.
 4. **Central telemetry plane**: sanitized telemetry only.
-5. **Viewer and query plane**: read-only access for authorized users with audit logging.
+5. **Viewer and query plane**: read-only access for authenticated users through Microsoft Entra ID and a dedicated query identity.
 
 ## Target data path
 
@@ -22,7 +22,7 @@ flowchart LR
   D --> E[Azure Monitor / Application Insights]
   D --> F[Azure Data Explorer / Kusto]
   D --> G[Blob / ADLS sanitized archive]
-  H[TraceForge Viewer] -->|read only| F
+  H[Entra-protected TraceForge Viewer] -->|managed identity / read only| F
   I[Microsoft Entra ID] --> H
   J[Key Vault / Managed Identity] --> C
   J --> D
@@ -35,7 +35,7 @@ flowchart LR
 - **Fail closed for privacy**: malformed or unclassified sensitive fields must not bypass policy silently.
 - **No raw prompt or source capture by default**: prompt, completion, source content, request bodies, response bodies, and database statements are dropped unless an explicit policy enables a safer derived representation.
 - **Stable correlation without plaintext**: optional HMAC tokenization allows equality correlation while hiding the original value.
-- **Least privilege**: ingestion identities cannot query by default; query identities should not mutate collection policy.
+- **Least privilege**: ingestion identities cannot query by default; viewer identities receive query-only database permissions and do not mutate ingestion policy.
 - **Portable core, Azure production profile**: the privacy core and OTLP pipeline remain portable, while the reference production deployment targets Azure Container Apps, Azure Monitor, ADX/Kusto, Blob/ADLS, Key Vault, and Entra ID.
 
 ## Local reference profile
@@ -62,25 +62,28 @@ The trace store scrubs again at ingress as defense in depth. Privacy findings ar
 
 ## Azure production profile
 
-M5 now has an infrastructure foundation in `deploy/azure/main.bicep`.
+M5 is implemented in `deploy/azure/main.bicep` as an opt-in production profile.
 
-The first Azure slice deploys:
+The current Azure slice deploys:
 
 - Azure Container Apps environment
 - external HTTP/2 TraceForge privacy gateway
 - internal OpenTelemetry Collector
-- separate user-assigned managed identities
+- separate user-assigned identities for gateway, collector, and optional production viewer
 - RBAC-enabled Key Vault with purge protection
 - Log Analytics and workspace-based Application Insights
 - ADLS Gen2 containers for sanitized archives
 - optional Azure Data Explorer cluster/database/table schema
 - database-level ADX `Ingestor` role for the collector identity
+- ADX-backed TraceForge viewer Container App when ADX, viewer image, and Entra client ID are supplied
+- database-level ADX `Viewer` role for the viewer identity
+- Container Apps built-in Microsoft Entra authentication on the production viewer
 
 The collector image is pinned to OpenTelemetry Collector Contrib and can select one of four profiles at deployment time: Azure Monitor only, Azure Monitor plus Blob archive, Azure Monitor plus ADX, or Azure Monitor plus ADX plus Blob archive.
 
 ADX is opt-in because of cost. Blob archival is also opt-in because the upstream OpenTelemetry Azure Blob exporter is still alpha. The production baseline therefore starts with Application Insights and adds the other sinks explicitly.
 
-The current Azure networking slice keeps service public endpoints enabled while requiring TLS and RBAC. Private endpoints and VNet hardening remain an explicit M5 security task rather than being implied by the template.
+The current Azure networking slice keeps service public endpoints enabled while requiring TLS and RBAC. The production viewer does not expose anonymous trace access: Container Apps built-in authentication redirects unauthenticated browser requests to Microsoft Entra ID before traffic reaches the viewer application. Private endpoints and VNet hardening remain an explicit M5 security task rather than being implied by the template.
 
 ## Components
 
@@ -105,8 +108,14 @@ A second OTel Collector performs batching, retry, routing, and export. In Azure 
 
 ### Viewer
 
-The local viewer is read-only and backed by the SQLite reference repository. The production viewer will replace that repository with ADX queries and then enable Container Apps built-in Microsoft Entra authentication. Until that adapter lands, Azure operators use Application Insights or ADX directly instead of presenting the local SQLite viewer as production-ready.
+The local viewer is read-only and backed by the SQLite reference repository. The Azure production viewer uses `KustoTraceRepository` against the `OTELTraces` table and keeps the existing viewer API/UI contract.
+
+User-controlled search values are sent to ADX through Kusto query parameters instead of being concatenated into KQL. The viewer process authenticates to ADX with its own user-assigned managed identity, which receives only the database-level `Viewer` role. Browser access is protected separately at the Container Apps edge using built-in Microsoft Entra authentication with unauthenticated requests redirected to sign-in.
+
+This separation keeps human authentication, application query authorization, and telemetry ingestion authorization as distinct controls.
 
 ## Current milestone
 
-M0-M4 are complete in the reference stack. M5 is in progress: the Azure IaC, Container Apps runtime path, managed identities, Key Vault, Azure Monitor, optional ADX, and optional sanitized Blob archive are implemented. Remaining M5 work is the ADX-backed viewer, Entra protection for that viewer, private networking, and live subscription deployment validation.
+M0-M4 are complete in the reference stack. M5 now includes Azure IaC, Container Apps gateway/collector/viewer, separate managed identities, Key Vault, Azure Monitor, optional ADX ingestion, optional sanitized Blob archive, ADX-backed viewer queries, and Microsoft Entra protection for the production viewer.
+
+Remaining M5 work is private networking/VNet hardening and live subscription deployment validation. M6 then adds inbound mTLS rotation, admission controls, audit policy, SBOM/scanning, and failure/load testing.
