@@ -25,21 +25,29 @@ from traceforge.audit import emit_audit_event, stable_ref
 from traceforge.gateway.otel_scrub import scrub_trace_export_request
 from traceforge.privacy import Scrubber
 from traceforge.store.repository import TraceRepository
+from traceforge.store.retention import RetentionSweeper
 from traceforge.store.viewer import VIEWER_HTML
 
 LOGGER = logging.getLogger("traceforge.store")
 
 
 class TraceStoreService(TraceServiceServicer):
-    def __init__(self, repository: TraceRepository) -> None:
+    def __init__(
+        self,
+        repository: TraceRepository,
+        retention: RetentionSweeper | None = None,
+    ) -> None:
         self._repository = repository
         self._scrubber = Scrubber()
+        self._retention = retention
 
     def Export(self, request, context):  # noqa: N802 - generated gRPC method name
         sanitized = type(request)()
         sanitized.CopyFrom(request)
         stats = scrub_trace_export_request(sanitized, self._scrubber)
         count = self._repository.ingest(sanitized)
+        if self._retention is not None:
+            self._retention.maybe_sweep()
         LOGGER.info(
             "stored trace export spans=%d defense_findings=%d persisted=%d",
             stats.spans_seen,
@@ -220,6 +228,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--http-address",
         default=os.getenv("TRACEFORGE_STORE_HTTP_ADDRESS", "0.0.0.0:8081"),
     )
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=int(os.getenv("TRACEFORGE_STORE_RETENTION_DAYS", "30")),
+        help="Delete locally persisted rows older than this many ingestion days; 0 disables pruning",
+    )
+    parser.add_argument(
+        "--retention-sweep-seconds",
+        type=float,
+        default=float(os.getenv("TRACEFORGE_STORE_RETENTION_SWEEP_SECONDS", "3600")),
+        help="Minimum seconds between local retention sweeps",
+    )
     return parser
 
 
@@ -228,11 +248,21 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     repository = TraceRepository(Path(args.db))
+    retention = RetentionSweeper(
+        repository.path,
+        retention_days=args.retention_days,
+        sweep_interval_seconds=args.retention_sweep_seconds,
+    )
+    retention.maybe_sweep(force=True)
+
     grpc_server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=8),
         options=[("grpc.max_receive_message_length", 16 * 1024 * 1024)],
     )
-    add_TraceServiceServicer_to_server(TraceStoreService(repository), grpc_server)
+    add_TraceServiceServicer_to_server(
+        TraceStoreService(repository, retention=retention),
+        grpc_server,
+    )
     grpc_server.add_insecure_port(args.otlp_address)
 
     viewer = ViewerServer(_split_host_port(args.http_address), repository)
@@ -240,7 +270,12 @@ def main() -> int:
 
     grpc_server.start()
     viewer_thread.start()
-    LOGGER.info("trace store OTLP=%s viewer=http://%s", args.otlp_address, args.http_address)
+    LOGGER.info(
+        "trace store OTLP=%s viewer=http://%s retention_days=%d",
+        args.otlp_address,
+        args.http_address,
+        args.retention_days,
+    )
     try:
         grpc_server.wait_for_termination()
     except KeyboardInterrupt:
