@@ -35,10 +35,22 @@ class GatewayConfig:
     upstream_client_key_file: Path | None = None
     max_receive_message_mib: int = 16
     export_timeout_seconds: float = 10.0
+    max_inflight_exports: int = 64
+    admission_timeout_seconds: float = 0.25
     redaction_mode: RedactionMode = RedactionMode.REDACT
     redact_pii: bool = True
     detect_high_entropy: bool = True
     tokenization_key: bytes | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_receive_message_mib < 1:
+            raise ValueError("max_receive_message_mib must be at least 1")
+        if self.export_timeout_seconds <= 0:
+            raise ValueError("export_timeout_seconds must be greater than 0")
+        if self.max_inflight_exports < 1:
+            raise ValueError("max_inflight_exports must be at least 1")
+        if self.admission_timeout_seconds <= 0:
+            raise ValueError("admission_timeout_seconds must be greater than 0")
 
     @classmethod
     def from_env(cls) -> GatewayConfig:
@@ -60,6 +72,10 @@ class GatewayConfig:
             ),
             max_receive_message_mib=_env_int("TRACEFORGE_MAX_RECEIVE_MIB", 16),
             export_timeout_seconds=_env_float("TRACEFORGE_EXPORT_TIMEOUT_SECONDS", 10.0),
+            max_inflight_exports=_env_int("TRACEFORGE_MAX_INFLIGHT_EXPORTS", 64),
+            admission_timeout_seconds=_env_float(
+                "TRACEFORGE_ADMISSION_TIMEOUT_SECONDS", 0.25
+            ),
             redaction_mode=mode,
             redact_pii=_env_bool("TRACEFORGE_REDACT_PII", True),
             detect_high_entropy=_env_bool("TRACEFORGE_DETECT_HIGH_ENTROPY", True),

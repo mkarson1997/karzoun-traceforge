@@ -31,39 +31,140 @@ class PrivacyGateway(TraceServiceServicer):
         scrubber: Scrubber,
         upstream_stub: TraceServiceStub,
         export_timeout_seconds: float,
+        max_inflight_exports: int = 64,
+        admission_timeout_seconds: float = 0.25,
     ) -> None:
+        if max_inflight_exports < 1:
+            raise ValueError("max_inflight_exports must be at least 1")
+        if admission_timeout_seconds <= 0:
+            raise ValueError("admission_timeout_seconds must be greater than 0")
+
         self._scrubber = scrubber
         self._upstream_stub = upstream_stub
         self._export_timeout_seconds = export_timeout_seconds
+        self._max_inflight_exports = max_inflight_exports
+        self._admission_timeout_seconds = admission_timeout_seconds
+        self._admission = asyncio.Semaphore(max_inflight_exports)
         self.ready = True
 
-    async def Export(self, request, context):  # noqa: N802 - gRPC generated method name
-        sanitized = type(request)()
-        sanitized.CopyFrom(request)
-        stats = scrub_trace_export_request(sanitized, self._scrubber)
-        export_id = uuid4().hex
-        attach_privacy_summary(sanitized, stats, export_id=export_id)
+        self._inflight_exports = 0
+        self._accepted_exports_total = 0
+        self._rejected_exports_total = 0
+        self._upstream_failures_total = 0
+        self._scrub_findings_total = 0
+        self._scrub_attributes_removed_total = 0
+        self._scrub_attributes_rewritten_total = 0
 
-        LOGGER.info(
-            "trace export scrubbed export=%s spans=%d events=%d links=%d findings=%d "
-            "removed=%d rewritten=%d",
-            export_id,
-            stats.spans_seen,
-            stats.events_seen,
-            stats.links_seen,
-            stats.findings,
-            stats.attributes_removed,
-            stats.attributes_rewritten,
-        )
+    async def Export(self, request, context):  # noqa: N802 - gRPC generated method name
         try:
-            return await self._upstream_stub.Export(
-                sanitized,
-                timeout=self._export_timeout_seconds,
+            await asyncio.wait_for(
+                self._admission.acquire(),
+                timeout=self._admission_timeout_seconds,
             )
-        except grpc.aio.AioRpcError as exc:
-            LOGGER.warning("upstream OTLP export failed: %s", exc.code())
-            await context.abort(grpc.StatusCode.UNAVAILABLE, "upstream OTLP export failed")
-        return ExportTraceServiceResponse()
+        except TimeoutError:
+            self._rejected_exports_total += 1
+            LOGGER.warning(
+                "trace export rejected by admission control inflight=%d limit=%d",
+                self._inflight_exports,
+                self._max_inflight_exports,
+            )
+            await context.abort(
+                grpc.StatusCode.RESOURCE_EXHAUSTED,
+                "TraceForge gateway export capacity exhausted; retry with backoff",
+            )
+            return ExportTraceServiceResponse()
+
+        self._inflight_exports += 1
+        self._accepted_exports_total += 1
+        try:
+            sanitized = type(request)()
+            sanitized.CopyFrom(request)
+            stats = scrub_trace_export_request(sanitized, self._scrubber)
+            export_id = uuid4().hex
+            attach_privacy_summary(sanitized, stats, export_id=export_id)
+
+            self._scrub_findings_total += stats.findings
+            self._scrub_attributes_removed_total += stats.attributes_removed
+            self._scrub_attributes_rewritten_total += stats.attributes_rewritten
+
+            LOGGER.info(
+                "trace export scrubbed export=%s spans=%d events=%d links=%d findings=%d "
+                "removed=%d rewritten=%d inflight=%d/%d",
+                export_id,
+                stats.spans_seen,
+                stats.events_seen,
+                stats.links_seen,
+                stats.findings,
+                stats.attributes_removed,
+                stats.attributes_rewritten,
+                self._inflight_exports,
+                self._max_inflight_exports,
+            )
+            try:
+                return await self._upstream_stub.Export(
+                    sanitized,
+                    timeout=self._export_timeout_seconds,
+                )
+            except grpc.aio.AioRpcError as exc:
+                self._upstream_failures_total += 1
+                LOGGER.warning("upstream OTLP export failed: %s", exc.code())
+                await context.abort(grpc.StatusCode.UNAVAILABLE, "upstream OTLP export failed")
+            return ExportTraceServiceResponse()
+        finally:
+            self._inflight_exports -= 1
+            self._admission.release()
+
+    def metrics_snapshot(self) -> dict[str, int]:
+        return {
+            "inflight_exports": self._inflight_exports,
+            "max_inflight_exports": self._max_inflight_exports,
+            "accepted_exports_total": self._accepted_exports_total,
+            "rejected_exports_total": self._rejected_exports_total,
+            "upstream_failures_total": self._upstream_failures_total,
+            "scrub_findings_total": self._scrub_findings_total,
+            "scrub_attributes_removed_total": self._scrub_attributes_removed_total,
+            "scrub_attributes_rewritten_total": self._scrub_attributes_rewritten_total,
+        }
+
+    def render_metrics(self) -> str:
+        snapshot = self.metrics_snapshot()
+        saturated = int(
+            snapshot["inflight_exports"] >= snapshot["max_inflight_exports"]
+        )
+        return "\n".join(
+            [
+                "# HELP traceforge_gateway_inflight_exports Current admitted OTLP exports.",
+                "# TYPE traceforge_gateway_inflight_exports gauge",
+                f"traceforge_gateway_inflight_exports {snapshot['inflight_exports']}",
+                "# HELP traceforge_gateway_max_inflight_exports Configured export concurrency limit.",
+                "# TYPE traceforge_gateway_max_inflight_exports gauge",
+                f"traceforge_gateway_max_inflight_exports {snapshot['max_inflight_exports']}",
+                "# HELP traceforge_gateway_backpressure_active Whether the admission limit is saturated.",
+                "# TYPE traceforge_gateway_backpressure_active gauge",
+                f"traceforge_gateway_backpressure_active {saturated}",
+                "# HELP traceforge_gateway_exports_accepted_total OTLP exports admitted for scrubbing.",
+                "# TYPE traceforge_gateway_exports_accepted_total counter",
+                f"traceforge_gateway_exports_accepted_total {snapshot['accepted_exports_total']}",
+                "# HELP traceforge_gateway_exports_rejected_total OTLP exports rejected by admission control.",
+                "# TYPE traceforge_gateway_exports_rejected_total counter",
+                f"traceforge_gateway_exports_rejected_total {snapshot['rejected_exports_total']}",
+                "# HELP traceforge_gateway_upstream_failures_total Admitted exports that failed upstream.",
+                "# TYPE traceforge_gateway_upstream_failures_total counter",
+                f"traceforge_gateway_upstream_failures_total {snapshot['upstream_failures_total']}",
+                "# HELP traceforge_gateway_scrub_findings_total Privacy findings observed after admission.",
+                "# TYPE traceforge_gateway_scrub_findings_total counter",
+                f"traceforge_gateway_scrub_findings_total {snapshot['scrub_findings_total']}",
+                "# HELP traceforge_gateway_scrub_attributes_removed_total Attributes removed by policy.",
+                "# TYPE traceforge_gateway_scrub_attributes_removed_total counter",
+                "traceforge_gateway_scrub_attributes_removed_total "
+                f"{snapshot['scrub_attributes_removed_total']}",
+                "# HELP traceforge_gateway_scrub_attributes_rewritten_total Attributes rewritten by policy.",
+                "# TYPE traceforge_gateway_scrub_attributes_rewritten_total counter",
+                "traceforge_gateway_scrub_attributes_rewritten_total "
+                f"{snapshot['scrub_attributes_rewritten_total']}",
+                "",
+            ]
+        )
 
 
 async def serve(config: GatewayConfig) -> None:
@@ -81,6 +182,8 @@ async def serve(config: GatewayConfig) -> None:
         scrubber=scrubber,
         upstream_stub=stub,
         export_timeout_seconds=config.export_timeout_seconds,
+        max_inflight_exports=config.max_inflight_exports,
+        admission_timeout_seconds=config.admission_timeout_seconds,
     )
 
     server = grpc.aio.server(
@@ -107,9 +210,10 @@ async def serve(config: GatewayConfig) -> None:
 
     await server.start()
     LOGGER.info(
-        "TraceForge privacy gateway listening on %s; upstream=%s",
+        "TraceForge privacy gateway listening on %s; upstream=%s; max_inflight=%d",
         config.listen_address,
         config.upstream_endpoint,
+        config.max_inflight_exports,
     )
 
     try:
@@ -158,19 +262,23 @@ async def _handle_health(
         parts = line.decode("ascii", errors="ignore").split()
         path = parts[1] if len(parts) >= 2 else "/"
         ready = servicer.ready
+        content_type = "text/plain; charset=utf-8"
         if path == "/healthz":
             code, reason, body = 200, "OK", "ok\n"
         elif path == "/readyz" and ready:
             code, reason, body = 200, "OK", "ready\n"
         elif path == "/readyz":
             code, reason, body = 503, "Service Unavailable", "not ready\n"
+        elif path == "/metrics":
+            code, reason, body = 200, "OK", servicer.render_metrics()
+            content_type = "text/plain; version=0.0.4; charset=utf-8"
         else:
             code, reason, body = 404, "Not Found", "not found\n"
         payload = body.encode("utf-8")
         writer.write(
             (
                 f"HTTP/1.1 {code} {reason}\r\n"
-                "Content-Type: text/plain; charset=utf-8\r\n"
+                f"Content-Type: {content_type}\r\n"
                 f"Content-Length: {len(payload)}\r\n"
                 "Connection: close\r\n\r\n"
             ).encode("ascii")

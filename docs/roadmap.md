@@ -24,7 +24,7 @@
 - [x] Health and readiness endpoints
 - [x] Upstream OTLP exporter with TLS/mTLS support
 - [x] Request size limits and fail-closed upstream behavior
-- [ ] Bounded ingress admission control and explicit backpressure metrics
+- [x] Bounded ingress admission control and explicit backpressure metrics
 
 ## M3 - Local end-to-end demo
 
@@ -65,7 +65,7 @@
 ## M6 - Security and reliability
 
 - [ ] Inbound mTLS and certificate rotation
-- [ ] Rate limiting and abuse controls
+- [ ] Per-client rate limiting and abuse controls
 - [ ] Audit logging
 - [ ] Retention policies
 - [ ] SBOM, CodeQL, dependency scanning, and secret scanning
