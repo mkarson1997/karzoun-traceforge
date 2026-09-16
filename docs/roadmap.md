@@ -67,7 +67,7 @@
 - [x] Inbound mTLS requirement with SHA-256 client-certificate allowlist and overlap-based rotation
 - [x] Bounded per-client sliding-window rate limiting with abuse/backpressure metrics
 - [x] Structured privacy-safe audit events for gateway security decisions and viewer data access
-- [ ] Retention policies
+- [x] Finite retention for local SQLite, Log Analytics, ADX, and sanitized ADLS archives
 - [x] CodeQL static analysis
 - [x] Resolved-dependency vulnerability auditing and Dependabot updates
 - [x] CycloneDX SBOM generation and retained CI evidence
