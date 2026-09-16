@@ -21,7 +21,7 @@
 
 - [x] OTLP/gRPC TraceService receiver
 - [x] Span, event, resource, scope, and link attribute scrubbing
-- [x] Health and readiness endpoints
+- [x] Health, readiness, and Prometheus-style metrics endpoints
 - [x] Upstream OTLP exporter with TLS/mTLS support
 - [x] Request size limits and fail-closed upstream behavior
 - [x] Bounded ingress admission control and explicit backpressure metrics
@@ -64,9 +64,9 @@
 
 ## M6 - Security and reliability
 
-- [ ] Inbound mTLS and certificate rotation
+- [x] Inbound mTLS requirement with SHA-256 client-certificate allowlist and overlap-based rotation
 - [ ] Per-client rate limiting and abuse controls
-- [ ] Audit logging
+- [ ] Structured audit logging
 - [ ] Retention policies
 - [ ] SBOM, CodeQL, dependency scanning, and secret scanning
 - [ ] Load tests, soak tests, failure injection, and privacy benchmarks
