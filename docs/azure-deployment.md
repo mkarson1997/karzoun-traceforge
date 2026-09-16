@@ -8,6 +8,7 @@ TraceForge M5 moves the proven privacy boundary from the local Docker reference 
 AI coding agent / edge collector
             |
             | OTLP/gRPC TLS :443
+            | optional required client certificate
             v
 Azure Container Apps
 TraceForge Privacy Gateway
@@ -40,6 +41,7 @@ The gateway, collector, and production viewer use separate user-assigned managed
 - Azure Container Apps environment
 - internal OpenTelemetry Collector app
 - externally reachable HTTP/2 OTLP privacy gateway
+- optional required client-certificate mode on the OTLP gateway ingress
 - optional Azure Data Explorer cluster/database/schema and collector Ingestor assignment
 - optional ADX-backed TraceForge viewer Container App
 - database-level ADX `Viewer` assignment for the viewer identity
@@ -136,6 +138,78 @@ az deployment group create \
 ```
 
 The deployment outputs `gatewayOtlpEndpoint`. Configure edge collectors or agents to send OTLP/gRPC to that endpoint with TLS enabled.
+
+## OTLP client mTLS and certificate rotation
+
+TraceForge can require a client certificate on the public OTLP ingress and authorize specific certificate SHA-256 thumbprints in the privacy gateway.
+
+Set `gatewayTrustedClientCertificateHashes` to one or more 64-character SHA-256 certificate thumbprints. When the list is non-empty, the Bicep template changes Azure Container Apps ingress to `clientCertificateMode=require`. Container Apps performs the client-certificate handshake and forwards certificate metadata through `X-Forwarded-Client-Cert`. The gateway then extracts only the forwarded `Hash` field and compares it against the configured allowlist using constant-time comparison before admission or privacy processing.
+
+A parameter file is the least error-prone way to supply the array:
+
+```json
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "gatewayImage": { "value": "<registry>/traceforge:0.1.0" },
+    "collectorImage": { "value": "<registry>/traceforge-collector:0.1.0" },
+    "gatewayTrustedClientCertificateHashes": {
+      "value": [
+        "<64-hex-sha256-thumbprint>"
+      ]
+    }
+  }
+}
+```
+
+Deploy it with:
+
+```bash
+az deployment group create \
+  --resource-group <resource-group> \
+  --template-file deploy/azure/main.bicep \
+  --parameters @production.parameters.json
+```
+
+Certificate rotation is intentionally overlap-based and does not require downtime:
+
+1. Deploy `[old, new]` thumbprints.
+2. Roll clients from the old certificate to the new certificate.
+3. Confirm all clients are using the new certificate.
+4. Deploy `[new]` and retire the old certificate.
+
+An empty allowlist leaves the engineering-preview ingress in certificate-ignore mode for backwards compatibility. Production deployments should provide an explicit allowlist.
+
+This design does not claim that the Python process independently validates the full X.509 chain. Azure Container Apps handles the client-certificate handshake at ingress; TraceForge performs application-level authorization against the forwarded SHA-256 thumbprint.
+
+## Gateway admission control and metrics
+
+Each gateway replica bounds simultaneous OTLP export processing before it copies or scrubs request payloads. The Azure defaults are:
+
+```text
+gatewayMaxInflightExports = 64
+gatewayAdmissionTimeoutSeconds = 0.25
+```
+
+The matching runtime environment variables are:
+
+```text
+TRACEFORGE_MAX_INFLIGHT_EXPORTS
+TRACEFORGE_ADMISSION_TIMEOUT_SECONDS
+```
+
+If all admission slots remain occupied past the timeout, the gateway returns gRPC `RESOURCE_EXHAUSTED` and clients should retry with backoff.
+
+The health listener now exposes:
+
+```text
+/healthz
+/readyz
+/metrics
+```
+
+`/metrics` returns Prometheus text-format counters/gauges for current and maximum in-flight exports, backpressure saturation, accepted/rejected exports, client-certificate authorization rejections, upstream failures, and aggregate scrub findings/removal/rewrite counts. No matched secret value or certificate body is emitted in these metrics.
 
 ## ADX-backed production viewer
 
@@ -239,7 +313,7 @@ az deployment group create \
 
 The gateway and Entra-protected viewer still have deliberate external Container Apps ingress because they are the product's public entry surfaces. The collector remains internal-only.
 
-The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, and `privateEndpointsEnabled` so operators can verify the selected topology after deployment.
+The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, `privateEndpointsEnabled`, and `gatewayMutualTlsEnabled` so operators can verify the selected topology and OTLP client-certificate mode after deployment.
 
 ## ADX schema
 
@@ -279,8 +353,10 @@ The gateway identity receives Key Vault Secrets User. The secret value is never 
 ## Security notes
 
 - Gateway is the only externally exposed OTLP component.
+- A non-empty client-certificate thumbprint allowlist makes Container Apps require a certificate and makes the gateway authorize its forwarded SHA-256 hash.
 - Central collector ingress is internal to the Container Apps environment.
 - Gateway-to-collector traffic uses TLS.
+- Gateway admission is bounded and emits explicit backpressure metrics.
 - Production viewer ingress is HTTPS and protected by Container Apps built-in Entra authentication.
 - Viewer-to-ADX access uses a dedicated managed identity with only database-level `Viewer` permissions.
 - Storage disallows public blob access and shared-key authorization.
@@ -293,7 +369,7 @@ The gateway identity receives Key Vault Secrets User. The secret value is never 
 
 ## Remaining M5 validation
 
-The Azure production profile now has the gateway, collector, Azure Monitor sink, optional ADX ingestion, optional archive sink, ADX-backed viewer, least-privilege viewer identity, Entra edge authentication, VNet integration, Private DNS, and service Private Endpoints in code.
+The Azure production profile now has the gateway, collector, Azure Monitor sink, optional ADX ingestion, optional archive sink, ADX-backed viewer, least-privilege viewer identity, Entra edge authentication, optional client-certificate mTLS authorization, VNet integration, Private DNS, and service Private Endpoints in code.
 
 M5 is not marked fully production-validated until a real subscription deployment verifies:
 
@@ -301,7 +377,8 @@ M5 is not marked fully production-validated until a real subscription deployment
 - private DNS resolution from the Container Apps environment
 - Key Vault, Storage, and ADX connectivity with public access disabled
 - viewer Entra sign-in and callback configuration
+- OTLP client-certificate handshake and thumbprint authorization
 - end-to-end sanitized OTLP ingestion and ADX query behavior
 - rollback/redeployment behavior
 
-M6 then adds inbound mTLS policy/certificate rotation, rate controls, audit policy, SBOM/scanning, and failure/load testing.
+M6 continues with per-client rate limiting, structured audit logging, retention, SBOM/scanning, and failure/load testing.
