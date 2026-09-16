@@ -65,10 +65,13 @@
 ## M6 - Security and reliability
 
 - [x] Inbound mTLS requirement with SHA-256 client-certificate allowlist and overlap-based rotation
-- [ ] Per-client rate limiting and abuse controls
+- [x] Bounded per-client sliding-window rate limiting with abuse/backpressure metrics
 - [ ] Structured audit logging
 - [ ] Retention policies
-- [ ] SBOM, CodeQL, dependency scanning, and secret scanning
+- [x] CodeQL static analysis
+- [x] Resolved-dependency vulnerability auditing and Dependabot updates
+- [x] CycloneDX SBOM generation and retained CI evidence
+- [x] Committed-secret scanning with exact synthetic-fixture allowlisting
 - [ ] Load tests, soak tests, failure injection, and privacy benchmarks
 
 ## M7 - Productization

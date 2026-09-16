@@ -33,6 +33,14 @@ param gatewayMaxInflightExports int = 64
 @description('How long an OTLP export may wait for gateway admission capacity before RESOURCE_EXHAUSTED.')
 param gatewayAdmissionTimeoutSeconds string = '0.25'
 
+@description('Maximum OTLP exports accepted per client per minute by each gateway replica. Set 0 to disable.')
+@minValue(0)
+param gatewayClientRateLimitPerMinute int = 600
+
+@description('Maximum client identities retained by per-client rate-limit bookkeeping.')
+@minValue(1)
+param gatewayRateLimitMaxClients int = 4096
+
 @description('Deploy Azure Data Explorer. Disabled by default because ADX has a material hourly cost.')
 param deployKusto bool = false
 
@@ -497,6 +505,14 @@ var gatewayEnv = concat([
     name: 'TRACEFORGE_TRUSTED_CLIENT_CERT_HASHES'
     value: join(gatewayTrustedClientCertificateHashes, ',')
   }
+  {
+    name: 'TRACEFORGE_CLIENT_RATE_LIMIT_PER_MINUTE'
+    value: string(gatewayClientRateLimitPerMinute)
+  }
+  {
+    name: 'TRACEFORGE_RATE_LIMIT_MAX_CLIENTS'
+    value: string(gatewayRateLimitMaxClients)
+  }
 ], empty(tokenizationSecretUri) ? [] : [
   {
     name: 'TRACEFORGE_TOKENIZATION_KEY'
@@ -670,6 +686,7 @@ resource viewerAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if (d
 output gatewayFqdn string = gatewayApp.properties.configuration.ingress.fqdn
 output gatewayOtlpEndpoint string = '${gatewayApp.properties.configuration.ingress.fqdn}:443'
 output gatewayMutualTlsEnabled bool = gatewayMutualTlsEnabled
+output gatewayClientRateLimitPerMinute int = gatewayClientRateLimitPerMinute
 output collectorFqdn string = collectorApp.properties.configuration.ingress.fqdn
 output viewerFqdn string = deployViewer ? viewerApp.properties.configuration.ingress.fqdn : ''
 output viewerUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}' : ''
