@@ -39,6 +39,8 @@ class GatewayConfig:
     max_inflight_exports: int = 64
     admission_timeout_seconds: float = 0.25
     trusted_client_certificate_hashes: frozenset[str] = frozenset()
+    client_rate_limit_per_minute: int = 0
+    rate_limit_max_clients: int = 4096
     redaction_mode: RedactionMode = RedactionMode.REDACT
     redact_pii: bool = True
     detect_high_entropy: bool = True
@@ -53,6 +55,10 @@ class GatewayConfig:
             raise ValueError("max_inflight_exports must be at least 1")
         if self.admission_timeout_seconds <= 0:
             raise ValueError("admission_timeout_seconds must be greater than 0")
+        if self.client_rate_limit_per_minute < 0:
+            raise ValueError("client_rate_limit_per_minute must be zero or greater")
+        if self.rate_limit_max_clients < 1:
+            raise ValueError("rate_limit_max_clients must be at least 1")
 
     @classmethod
     def from_env(cls) -> GatewayConfig:
@@ -81,6 +87,10 @@ class GatewayConfig:
             trusted_client_certificate_hashes=parse_certificate_hashes(
                 os.getenv("TRACEFORGE_TRUSTED_CLIENT_CERT_HASHES")
             ),
+            client_rate_limit_per_minute=_env_int(
+                "TRACEFORGE_CLIENT_RATE_LIMIT_PER_MINUTE", 0
+            ),
+            rate_limit_max_clients=_env_int("TRACEFORGE_RATE_LIMIT_MAX_CLIENTS", 4096),
             redaction_mode=mode,
             redact_pii=_env_bool("TRACEFORGE_REDACT_PII", True),
             detect_high_entropy=_env_bool("TRACEFORGE_DETECT_HIGH_ENTROPY", True),

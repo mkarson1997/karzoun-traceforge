@@ -54,11 +54,15 @@ class AbortCalled(Exception):
 
 
 class FakeContext:
-    def __init__(self, metadata=()) -> None:
+    def __init__(self, metadata=(), peer_value="ipv4:127.0.0.1:4317") -> None:
         self._metadata = metadata
+        self._peer_value = peer_value
 
     def invocation_metadata(self):
         return self._metadata
+
+    def peer(self):
+        return self._peer_value
 
     async def abort(self, code: grpc.StatusCode, details: str):
         raise AbortCalled(code, details)
@@ -74,6 +78,10 @@ def test_gateway_rejects_when_admission_capacity_is_exhausted() -> None:
 
 def test_gateway_enforces_forwarded_client_certificate_allowlist() -> None:
     asyncio.run(_exercise_client_certificate_authorization())
+
+
+def test_gateway_rate_limits_each_authenticated_certificate_independently() -> None:
+    asyncio.run(_exercise_per_client_rate_limit())
 
 
 async def _exercise_gateway() -> None:
@@ -197,3 +205,38 @@ async def _exercise_client_certificate_authorization() -> None:
     assert metrics["accepted_exports_total"] == 1
     assert metrics["client_auth_rejections_total"] == 2
     assert "traceforge_gateway_client_auth_rejections_total 2" in servicer.render_metrics()
+
+
+async def _exercise_per_client_rate_limit() -> None:
+    client_a = "AB" * 32
+    client_b = "CD" * 32
+    upstream = ImmediateUpstreamStub()
+    servicer = PrivacyGateway(
+        scrubber=Scrubber(),
+        upstream_stub=upstream,  # type: ignore[arg-type]
+        export_timeout_seconds=5,
+        trusted_client_certificate_hashes=frozenset({client_a, client_b}),
+        client_rate_limit_per_minute=1,
+    )
+    request = ExportTraceServiceRequest()
+    request.resource_spans.add().scope_spans.add().spans.add().name = "rate limited export"
+    metadata_a = [("x-forwarded-client-cert", f"Hash={client_a}")]
+    metadata_b = [("x-forwarded-client-cert", f"Hash={client_b}")]
+
+    await servicer.Export(request, FakeContext(metadata_a))
+    try:
+        await servicer.Export(request, FakeContext(metadata_a))
+    except AbortCalled as exc:
+        assert exc.code == grpc.StatusCode.RESOURCE_EXHAUSTED
+        assert "rate limit" in exc.details
+    else:
+        raise AssertionError("second export from the same client should be rate limited")
+
+    await servicer.Export(request, FakeContext(metadata_b))
+
+    metrics = servicer.metrics_snapshot()
+    assert upstream.calls == 2
+    assert metrics["accepted_exports_total"] == 2
+    assert metrics["rate_limit_rejections_total"] == 1
+    assert metrics["rate_limit_tracked_clients"] == 2
+    assert "traceforge_gateway_rate_limit_rejections_total 1" in servicer.render_metrics()
