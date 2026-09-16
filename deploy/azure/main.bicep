@@ -14,6 +14,15 @@ param gatewayImage string
 @description('Container image built from Dockerfile.collector.')
 param collectorImage string
 
+@description('Container image built from Dockerfile.viewer. Required with entraClientId to deploy the protected ADX viewer.')
+param viewerImage string = ''
+
+@description('Microsoft Entra application client ID used by Container Apps built-in authentication for the production viewer.')
+param entraClientId string = ''
+
+@description('Microsoft Entra tenant ID that owns the viewer app registration.')
+param entraTenantId string = tenant().tenantId
+
 @description('Deploy Azure Data Explorer. Disabled by default because ADX has a material hourly cost.')
 param deployKusto bool = false
 
@@ -46,8 +55,10 @@ var storageName = '${normalizedPrefix}st${suffix}'
 var environmentName = '${prefix}-env-${suffix}'
 var gatewayName = '${prefix}-gateway-${suffix}'
 var collectorName = '${prefix}-collector-${suffix}'
+var viewerName = '${prefix}-viewer-${suffix}'
 var kustoClusterName = '${normalizedPrefix}adx${suffix}'
 var kustoDatabaseName = 'traceforge'
+var deployViewer = deployKusto && !empty(viewerImage) && !empty(entraClientId)
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var collectorConfig = deployKusto
@@ -171,6 +182,11 @@ resource gatewayIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-
   location: location
 }
 
+resource viewerIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = if (deployViewer) {
+  name: '${prefix}-viewer-mi-${suffix}'
+  location: location
+}
+
 resource collectorKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, collectorIdentity.id, keyVaultSecretsUserRoleId)
   scope: keyVault
@@ -267,6 +283,17 @@ resource kustoIngestor 'Microsoft.Kusto/clusters/databases/principalAssignments@
     principalId: collectorIdentity.properties.clientId
     principalType: 'App'
     role: 'Ingestor'
+    tenantId: tenant().tenantId
+  }
+}
+
+resource kustoViewer 'Microsoft.Kusto/clusters/databases/principalAssignments@2025-02-14' = if (deployViewer) {
+  parent: kustoDatabase
+  name: guid(kustoDatabase.id, viewerIdentity.id, 'viewer')
+  properties: {
+    principalId: viewerIdentity.properties.clientId
+    principalType: 'App'
+    role: 'Viewer'
     tenantId: tenant().tenantId
   }
 }
@@ -452,9 +479,119 @@ resource gatewayApp 'Microsoft.App/containerApps@2026-01-01' = {
   ]
 }
 
+resource viewerApp 'Microsoft.App/containerApps@2026-01-01' = if (deployViewer) {
+  name: viewerName
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${viewerIdentity.id}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerEnvironment.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        allowInsecure: false
+        targetPort: 8081
+        transport: 'http'
+        traffic: [
+          {
+            latestRevision: true
+            weight: 100
+          }
+        ]
+      }
+    }
+    template: {
+      containers: [
+        {
+          name: 'viewer'
+          image: viewerImage
+          env: [
+            {
+              name: 'TRACEFORGE_KUSTO_CLUSTER_URI'
+              value: kustoCluster.properties.uri
+            }
+            {
+              name: 'TRACEFORGE_KUSTO_DATABASE'
+              value: kustoDatabaseName
+            }
+            {
+              name: 'TRACEFORGE_KUSTO_AUTH'
+              value: 'managed_identity'
+            }
+            {
+              name: 'TRACEFORGE_VIEWER_HTTP_ADDRESS'
+              value: '0.0.0.0:8081'
+            }
+            {
+              name: 'AZURE_CLIENT_ID'
+              value: viewerIdentity.properties.clientId
+            }
+          ]
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 3
+      }
+    }
+  }
+  dependsOn: [
+    kustoSchema
+    kustoViewer
+  ]
+}
+
+resource viewerAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if (deployViewer) {
+  parent: viewerApp
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+      redirectToProvider: 'azureactivedirectory'
+    }
+    httpSettings: {
+      requireHttps: true
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: entraClientId
+          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: [
+            entraClientId
+          ]
+        }
+      }
+    }
+    login: {
+      tokenStore: {
+        enabled: false
+      }
+    }
+  }
+}
+
 output gatewayFqdn string = gatewayApp.properties.configuration.ingress.fqdn
 output gatewayOtlpEndpoint string = '${gatewayApp.properties.configuration.ingress.fqdn}:443'
 output collectorFqdn string = collectorApp.properties.configuration.ingress.fqdn
+output viewerFqdn string = deployViewer ? viewerApp.properties.configuration.ingress.fqdn : ''
+output viewerUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}' : ''
+output viewerCallbackUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}/.auth/login/aad/callback' : ''
 output applicationInsightsName string = appInsights.name
 output keyVaultUri string = keyVault.properties.vaultUri
 output archiveStorageAccount string = archiveStorage.name

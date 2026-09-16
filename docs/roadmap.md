@@ -50,11 +50,12 @@
 - [x] Bicep infrastructure foundation
 - [x] Azure Container Apps privacy gateway and internal collector
 - [x] Separate managed identities and RBAC-enabled Key Vault
-- [ ] Microsoft Entra ID authentication on the production viewer
+- [x] Microsoft Entra ID authentication on the production viewer
 - [x] Azure Monitor / workspace-based Application Insights OTLP export
 - [x] Optional ADX/Kusto cluster, database, schema, and managed-identity ingestion
 - [x] ADLS Gen2 archive containers and opt-in managed-identity Blob exporter profile
-- [ ] ADX-backed read-only viewer repository
+- [x] ADX-backed read-only viewer repository
+- [x] Viewer managed identity with database-level ADX Viewer role
 - [ ] Private endpoints, VNet hardening, and public-network shutdown
 - [ ] Live deployment validation in an Azure subscription
 

@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4 are implemented in the local reference stack. M5 now includes the Azure infrastructure/runtime foundation and is moving into the ADX-backed production viewer and private-networking phase.
+> Status: engineering preview. M0-M4 are implemented in the local reference stack. M5 now includes the Azure infrastructure/runtime foundation, ADX-backed production viewer, dedicated viewer identity, and Microsoft Entra edge authentication. Private networking and live Azure validation remain.
 
 ## Why TraceForge
 
@@ -35,7 +35,7 @@ Searchable read-only API + Trace Viewer
 Sanitized JSONL export
 ```
 
-The Azure production profile preserves the same privacy boundary while adding Azure Container Apps, separate managed identities, RBAC-enabled Key Vault, Application Insights, optional ADX/Kusto, and optional ADLS/Blob sanitized archives.
+The Azure production profile preserves the same privacy boundary while adding Azure Container Apps, separate managed identities, RBAC-enabled Key Vault, Application Insights, optional ADX/Kusto, optional ADLS/Blob sanitized archives, and an Entra-protected ADX-backed viewer.
 
 See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/azure-deployment.md](docs/azure-deployment.md), and [docs/roadmap.md](docs/roadmap.md).
 
@@ -64,6 +64,10 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 - PowerShell and POSIX one-command demo bootstrap scripts
 - Bicep Azure production foundation with Container Apps, managed identities, Key Vault, Log Analytics, Application Insights, ADLS Gen2, and optional ADX
 - Pinned OpenTelemetry Collector Contrib Azure profiles for Monitor, ADX, and opt-in Blob archival
+- ADX-backed production repository using parameterized KQL
+- Dedicated viewer Container App and user-assigned managed identity
+- Database-level ADX `Viewer` assignment separate from collector `Ingestor`
+- Microsoft Entra built-in authentication with redirect-to-login behavior on the production viewer
 
 ## One-command local demo
 
@@ -192,11 +196,12 @@ For production transport, configure a trusted CA and client certificate/key for 
 
 ## Azure production profile
 
-The M5 infrastructure entry point is `deploy/azure/main.bicep`. Build both runtime images first:
+The M5 infrastructure entry point is `deploy/azure/main.bicep`. Build the three runtime images:
 
 ```bash
 docker build -t <registry>/traceforge:0.1.0 .
 docker build -f Dockerfile.collector -t <registry>/traceforge-collector:0.1.0 .
+docker build -f Dockerfile.viewer -t <registry>/traceforge-viewer:0.1.0 .
 ```
 
 Validate the template:
@@ -216,13 +221,13 @@ az deployment group create \
       collectorImage=<registry>/traceforge-collector:0.1.0
 ```
 
-ADX is opt-in with `deployKusto=true`. Sanitized ADLS/Blob archival is independently opt-in with `enableBlobArchive=true`; it is not the default because the upstream Azure Blob exporter is still alpha. See [docs/azure-deployment.md](docs/azure-deployment.md) for deployment, cost, identity, and security details.
+ADX is opt-in with `deployKusto=true`. The protected production viewer is deployed when `deployKusto=true`, `viewerImage` is supplied, and `entraClientId` is supplied. Its managed identity receives only the ADX database `Viewer` role, while Container Apps built-in authentication redirects unauthenticated browser requests to Microsoft Entra ID.
 
-The local SQLite viewer is intentionally not presented as the Azure production query plane. The remaining M5 viewer work is an ADX-backed read-only repository followed by Microsoft Entra protection at the Container Apps edge.
+Sanitized ADLS/Blob archival is independently opt-in with `enableBlobArchive=true`; it is not the default because the upstream Azure Blob exporter is still alpha. See [docs/azure-deployment.md](docs/azure-deployment.md) for deployment, Entra redirect URI setup, cost, identity, and security details.
 
 ## Delivery plan
 
-M0-M4 are implemented in the reference stack. The first M5 Azure slice is implemented: IaC, Container Apps gateway/collector, managed identities, Key Vault, Azure Monitor, ADLS infrastructure, and optional ADX ingestion. M5 continues with the ADX-backed viewer, Entra authentication, private networking, and live Azure deployment validation. M6 then hardens security and reliability, and M7 packages adapters and organization controls for product use.
+M0-M4 are implemented in the reference stack. M5 now includes IaC, Container Apps gateway/collector/viewer, managed identities, Key Vault, Azure Monitor, ADLS infrastructure, optional ADX ingestion, the ADX query backend, and Entra viewer authentication. Remaining M5 work is private networking plus live Azure deployment validation. M6 then hardens security and reliability, and M7 packages adapters and organization controls for product use.
 
 ## Commercial status
 
