@@ -72,11 +72,11 @@
 - [x] Resolved-dependency vulnerability auditing and Dependabot updates
 - [x] CycloneDX SBOM generation and retained CI evidence
 - [x] Committed-secret scanning with exact synthetic-fixture allowlisting
-- [ ] Load tests, soak tests, failure injection, and privacy benchmarks
+- [x] Load tests, soak tests, failure injection, and privacy benchmarks
 
 ## M7 - Productization
 
-- [ ] Pluggable adapters for Copilot CLI, Claude Code, Codex, and generic tools
+- [x] Pluggable adapters for Copilot CLI, Claude Code, Codex, and generic tools
 - [ ] Policy profiles and organization controls
 - [ ] Multi-tenant control plane
 - [ ] Deployment guide and commercial packaging
