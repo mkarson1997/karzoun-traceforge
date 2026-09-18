@@ -12,6 +12,7 @@ from traceforge.control_plane import TenantRegistry, _ControlPlaneServer
 from traceforge.demo import build_demo_request
 from traceforge.operations import (
     _write_private_json,
+    bootstrap_organization,
     create_backup,
     doctor,
     restore_backup,
@@ -48,6 +49,22 @@ def _tenant_trace(repository: TraceRepository, organization_id: str, trace_byte:
     )
     repository.ingest(request)
     return identity.trace_id
+
+
+def test_bootstrap_organization_creates_separate_scoped_keys(tmp_path):
+    payload = bootstrap_organization(
+        tmp_path / "tenants.db",
+        name="Alpha",
+        organization_id="org_alpha",
+        profile="strict",
+    )
+
+    assert payload["organization_id"] == "org_alpha"
+    assert payload["ingest"]["scopes"] == ["ingest", "policy:read"]
+    assert payload["viewer"]["scopes"] == ["viewer:read"]
+    assert payload["ingest"]["api_key"].startswith("tfk_")
+    assert payload["viewer"]["api_key"].startswith("tfk_")
+    assert payload["ingest"]["api_key"] != payload["viewer"]["api_key"]
 
 
 def test_backup_verify_and_restore_roundtrip(tmp_path):
