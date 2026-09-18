@@ -79,4 +79,4 @@
 - [x] Pluggable adapters for Copilot CLI, Claude Code, Codex, and generic tools
 - [x] Policy profiles and organization controls
 - [x] Multi-tenant control plane
-- [ ] Deployment guide and commercial packaging
+- [x] Deployment guide and commercial packaging
