@@ -34,3 +34,7 @@ jobs:
         run: docker build -f Dockerfile.viewer -t traceforge-viewer:ci .
       - name: Build control plane image
         run: docker build -f Dockerfile.control-plane -t traceforge-control-plane:ci .
+      - name: Validate product compose profile
+        env:
+          TRACEFORGE_TENANT_SIGNING_KEY: package-validation-signing-key-000000000000
+        run: docker compose -f deploy/compose/product.yml config --quiet
