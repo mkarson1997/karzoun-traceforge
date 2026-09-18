@@ -9,6 +9,7 @@ AI coding agent / edge collector
             |
             | OTLP/gRPC TLS :443
             | optional required client certificate
+            | optional short-lived tenant ingest token
             v
 Azure Container Apps
 TraceForge Privacy Gateway
@@ -26,7 +27,7 @@ Insights      (optional)     (optional archive)
          Entra-protected TraceForge Viewer
 ```
 
-The gateway, collector, and production viewer use separate user-assigned managed identities. Key Vault is RBAC-enabled and remains the secret authority for runtime credentials such as an optional TraceForge tokenization key. The collector receives Storage Blob Data Contributor on the sanitized archive account and, when ADX is enabled, database Ingestor on the TraceForge Kusto database. The viewer receives only the database-level Kusto `Viewer` role.
+The gateway, collector, and production viewer use separate user-assigned managed identities. Key Vault is RBAC-enabled and remains the secret authority for runtime credentials such as an optional TraceForge tokenization key and tenant-token signing key. The collector receives Storage Blob Data Contributor on the sanitized archive account and, when ADX is enabled, database Ingestor on the TraceForge Kusto database. The viewer receives only the database-level Kusto `Viewer` role.
 
 ## What the Bicep deployment creates
 
@@ -42,6 +43,7 @@ The gateway, collector, and production viewer use separate user-assigned managed
 - internal OpenTelemetry Collector app
 - externally reachable HTTP/2 OTLP privacy gateway
 - optional required client-certificate mode on the OTLP gateway ingress
+- optional required signed tenant-token authorization on the OTLP gateway
 - optional Azure Data Explorer cluster/database/schema and collector Ingestor assignment
 - optional ADX-backed TraceForge viewer Container App
 - database-level ADX `Viewer` assignment for the viewer identity
@@ -183,6 +185,41 @@ An empty allowlist leaves the engineering-preview ingress in certificate-ignore 
 
 This design does not claim that the Python process independently validates the full X.509 chain. Azure Container Apps handles the client-certificate handshake at ingress; TraceForge performs application-level authorization against the forwarded SHA-256 thumbprint.
 
+## Tenant token authorization
+
+The Azure gateway can enforce the M7 multi-tenant ingest boundary without passing the tenant signing
+key as a normal deployment parameter.
+
+1. Store the same high-entropy signing key used by the tenant control plane in Key Vault.
+2. Pass the Key Vault secret URI as `tenantSigningSecretUri`.
+3. The gateway managed identity reads the secret through the existing Key Vault Secrets User role.
+4. Bicep injects the secret as `TRACEFORGE_TENANT_SIGNING_KEY` and sets
+   `TRACEFORGE_TENANT_AUTH_REQUIRED=true`.
+
+Example:
+
+```bash
+az deployment group create \
+  --resource-group <resource-group> \
+  --template-file deploy/azure/main.bicep \
+  --parameters \
+      gatewayImage=<registry>/traceforge:0.1.0 \
+      collectorImage=<registry>/traceforge-collector:0.1.0 \
+      tenantSigningSecretUri=https://<vault>.vault.azure.net/secrets/traceforge-tenant-signing-key
+```
+
+When enabled, the gateway rejects missing, invalid, expired, or wrong-scope tenant tokens before
+privacy processing. After scrubbing, it removes any organization identity supplied by the endpoint
+and writes the organization ID from the verified token. The deployment output
+`gatewayTenantAuthEnabled` confirms whether this mode is active.
+
+The tenant control plane may be deployed separately from the telemetry data plane. Both components
+must use the same signing key. The reference control-plane store remains single-instance SQLite;
+multi-replica commercial control-plane deployments should use a shared managed transactional store.
+
+Tenant authorization and client-certificate authorization are independent controls and may be
+enabled together.
+
 ## Gateway admission control and metrics
 
 Each gateway replica bounds simultaneous OTLP export processing before it copies or scrubs request payloads. The Azure defaults are:
@@ -313,7 +350,7 @@ az deployment group create \
 
 The gateway and Entra-protected viewer still have deliberate external Container Apps ingress because they are the product's public entry surfaces. The collector remains internal-only.
 
-The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, `privateEndpointsEnabled`, and `gatewayMutualTlsEnabled` so operators can verify the selected topology and OTLP client-certificate mode after deployment.
+The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, `privateEndpointsEnabled`, `gatewayMutualTlsEnabled`, and `gatewayTenantAuthEnabled` so operators can verify the selected topology and OTLP client-certificate mode after deployment.
 
 ## ADX schema
 
@@ -354,6 +391,7 @@ The gateway identity receives Key Vault Secrets User. The secret value is never 
 
 - Gateway is the only externally exposed OTLP component.
 - A non-empty client-certificate thumbprint allowlist makes Container Apps require a certificate and makes the gateway authorize its forwarded SHA-256 hash.
+- A non-empty `tenantSigningSecretUri` makes the gateway require short-lived signed tenant ingest tokens and overwrite client-claimed organization identity.
 - Central collector ingress is internal to the Container Apps environment.
 - Gateway-to-collector traffic uses TLS.
 - Gateway admission is bounded and emits explicit backpressure metrics.
@@ -378,7 +416,8 @@ M5 is not marked fully production-validated until a real subscription deployment
 - Key Vault, Storage, and ADX connectivity with public access disabled
 - viewer Entra sign-in and callback configuration
 - OTLP client-certificate handshake and thumbprint authorization
+- signed tenant-token issuance, rejection paths, and authenticated organization overwrite
 - end-to-end sanitized OTLP ingestion and ADX query behavior
 - rollback/redeployment behavior
 
-M6 continues with per-client rate limiting, structured audit logging, retention, SBOM/scanning, and failure/load testing.
+M6 security and reliability hardening and M7 reference productization are complete in code. The remaining gate is live Azure validation of the production profile.
