@@ -40,6 +40,7 @@ traceforge-adapter = "traceforge.adapters:main"
 traceforge-policy = "traceforge.policy:main"
 traceforge-tenants = "traceforge.control_plane:tenants_main"
 traceforge-control-plane = "traceforge.control_plane:server_main"
+traceforge-azure-validate = "traceforge.azure_validation:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traceforge"]
