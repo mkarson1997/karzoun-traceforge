@@ -91,3 +91,13 @@
 - [x] Tenant-authenticated self-hosted viewer APIs and browser token handoff
 - [x] Optional fixed organization scope for Entra-protected Azure viewers
 - [x] Cross-tenant collision and query-isolation regression tests
+
+
+## M9 - Operational readiness
+
+- [x] One-command organization bootstrap with separate ingest/policy and viewer credentials
+- [x] Consistent SQLite online backups with SHA-256 manifest and integrity checks
+- [x] Verified atomic restore with explicit operator confirmation
+- [x] End-to-end doctor checks for gateway, control plane, policy, viewer token, and tenant query path
+- [x] On-demand Docker Compose operations profile with both persistent data volumes
+- [x] Operational backup/restore/doctor runbook and release handoff integration
