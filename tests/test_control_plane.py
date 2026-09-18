@@ -9,8 +9,8 @@ import pytest
 from traceforge.control_plane import (
     TenantRegistry,
     _ControlPlaneServer,
-    fetch_control_plane_session,
     _http_json,
+    fetch_control_plane_session,
 )
 from traceforge.policy import builtin_policy
 from traceforge.tenant_auth import TenantTokenSigner
