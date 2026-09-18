@@ -77,6 +77,6 @@
 ## M7 - Productization
 
 - [x] Pluggable adapters for Copilot CLI, Claude Code, Codex, and generic tools
-- [ ] Policy profiles and organization controls
+- [x] Policy profiles and organization controls
 - [ ] Multi-tenant control plane
 - [ ] Deployment guide and commercial packaging
