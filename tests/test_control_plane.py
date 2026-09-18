@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request
 
 import pytest
 
@@ -8,6 +10,7 @@ from traceforge.control_plane import (
     TenantRegistry,
     _ControlPlaneServer,
     fetch_control_plane_session,
+    _http_json,
 )
 from traceforge.policy import builtin_policy
 from traceforge.tenant_auth import TenantTokenSigner
@@ -71,3 +74,33 @@ def test_control_plane_delivers_policy_and_short_lived_ingest_token(tmp_path):
     assert session.policy.profile == "strict"
     claims = signer.verify(session.ingest_token, required_scope="ingest")
     assert claims.organization_id == "org_demo"
+
+
+
+class _RedirectHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        self.send_response(302)
+        self.send_header("Location", "http://127.0.0.1:1/credential-capture")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+def test_control_plane_client_refuses_http_redirects():
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+        request = Request(
+            f"http://{host}:{port}/v1/policy",
+            headers={"Authorization": "Bearer tfk_sensitive"},
+        )
+        with pytest.raises(PermissionError, match="HTTP 302"):
+            _http_json(request, 2)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
