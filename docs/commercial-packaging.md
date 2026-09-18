@@ -64,6 +64,7 @@ Before a release is promoted, the release candidate should have:
 - privacy benchmark with zero known-marker leaks
 - gateway load/soak and deterministic failure-injection evidence
 - successful multi-tenant spoofing and credential lifecycle tests
+- successful cross-tenant trace-ID collision and viewer query-isolation tests
 - a reviewed changelog entry
 - documented upgrade and rollback notes
 
