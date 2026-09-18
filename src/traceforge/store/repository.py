@@ -469,25 +469,46 @@ def _migrate_tenant_schema(connection: sqlite3.Connection) -> None:
         "trace_id",
         "span_id",
     ]:
+        legacy_rows = connection.execute("SELECT * FROM spans").fetchall()
         connection.execute("ALTER TABLE spans RENAME TO spans_pre_tenant")
         connection.executescript(_TABLE_SCHEMA.split("CREATE TABLE IF NOT EXISTS privacy_exports")[0])
-        connection.execute(
-            """
-            INSERT INTO spans (
-                organization_id, trace_id, span_id, parent_span_id, name, kind,
-                start_ns, end_ns, duration_ns, status_code, status_message, task_id,
-                session_id, agent_name, service_name, resource_json, attributes_json,
-                events_json, links_json, ingested_at
+        migrated_rows = [
+            (
+                _organization_from_resource_json(str(row["resource_json"])),
+                row["trace_id"],
+                row["span_id"],
+                row["parent_span_id"],
+                row["name"],
+                row["kind"],
+                row["start_ns"],
+                row["end_ns"],
+                row["duration_ns"],
+                row["status_code"],
+                row["status_message"],
+                row["task_id"],
+                row["session_id"],
+                row["agent_name"],
+                row["service_name"],
+                row["resource_json"],
+                row["attributes_json"],
+                row["events_json"],
+                row["links_json"],
+                row["ingested_at"],
             )
-            SELECT
-                ?, trace_id, span_id, parent_span_id, name, kind,
-                start_ns, end_ns, duration_ns, status_code, status_message, task_id,
-                session_id, agent_name, service_name, resource_json, attributes_json,
-                events_json, links_json, ingested_at
-            FROM spans_pre_tenant
-            """,
-            (_LEGACY_ORGANIZATION_ID,),
-        )
+            for row in legacy_rows
+        ]
+        if migrated_rows:
+            connection.executemany(
+                """
+                INSERT INTO spans (
+                    organization_id, trace_id, span_id, parent_span_id, name, kind,
+                    start_ns, end_ns, duration_ns, status_code, status_message, task_id,
+                    session_id, agent_name, service_name, resource_json, attributes_json,
+                    events_json, links_json, ingested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                migrated_rows,
+            )
         connection.execute("DROP TABLE spans_pre_tenant")
 
     privacy_info = connection.execute("PRAGMA table_info(privacy_exports)").fetchall()
@@ -501,6 +522,21 @@ def _migrate_tenant_schema(connection: sqlite3.Connection) -> None:
         "organization_id",
         "export_id",
     ]:
+        legacy_privacy_rows = connection.execute(
+            "SELECT * FROM privacy_exports"
+        ).fetchall()
+        export_organizations: dict[str, str] = {}
+        for row in connection.execute(
+            "SELECT organization_id, resource_json FROM spans"
+        ).fetchall():
+            try:
+                resource = json.loads(str(row["resource_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            export_id = _as_text(resource.get("traceforge.privacy.export_id"))
+            if export_id:
+                export_organizations.setdefault(export_id, str(row["organization_id"]))
+
         connection.execute("ALTER TABLE privacy_exports RENAME TO privacy_exports_pre_tenant")
         connection.execute(
             """
@@ -518,21 +554,47 @@ def _migrate_tenant_schema(connection: sqlite3.Connection) -> None:
             )
             """
         )
-        connection.execute(
-            """
-            INSERT INTO privacy_exports (
-                organization_id, export_id, findings, attributes_removed,
-                attributes_rewritten, spans_seen, events_seen, links_seen, ingested_at
+        migrated_privacy_rows = [
+            (
+                export_organizations.get(
+                    str(row["export_id"]),
+                    _LEGACY_ORGANIZATION_ID,
+                ),
+                row["export_id"],
+                row["findings"],
+                row["attributes_removed"],
+                row["attributes_rewritten"],
+                row["spans_seen"],
+                row["events_seen"],
+                row["links_seen"],
+                row["ingested_at"],
             )
-            SELECT
-                ?, export_id, findings, attributes_removed,
-                attributes_rewritten, spans_seen, events_seen, links_seen, ingested_at
-            FROM privacy_exports_pre_tenant
-            """,
-            (_LEGACY_ORGANIZATION_ID,),
-        )
+            for row in legacy_privacy_rows
+        ]
+        if migrated_privacy_rows:
+            connection.executemany(
+                """
+                INSERT INTO privacy_exports (
+                    organization_id, export_id, findings, attributes_removed,
+                    attributes_rewritten, spans_seen, events_seen, links_seen, ingested_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                migrated_privacy_rows,
+            )
         connection.execute("DROP TABLE privacy_exports_pre_tenant")
 
+
+def _organization_from_resource_json(resource_json: str) -> str:
+    try:
+        resource = json.loads(resource_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return _LEGACY_ORGANIZATION_ID
+    if not isinstance(resource, dict):
+        return _LEGACY_ORGANIZATION_ID
+    return (
+        _as_text(resource.get("traceforge.organization.id"))
+        or _LEGACY_ORGANIZATION_ID
+    )
 
 def _privacy_summary(
     resource: dict[str, Any],
