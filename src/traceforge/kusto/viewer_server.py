@@ -6,6 +6,7 @@ import os
 
 from traceforge.kusto.repository import KustoTraceRepository
 from traceforge.store.server import ViewerServer, _split_host_port
+from traceforge.tenant_auth import TenantTokenSigner
 
 LOGGER = logging.getLogger("traceforge.kusto.viewer")
 
@@ -36,6 +37,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--http-address",
         default=os.getenv("TRACEFORGE_VIEWER_HTTP_ADDRESS", "0.0.0.0:8081"),
     )
+    parser.add_argument(
+        "--organization-id",
+        default=os.getenv("TRACEFORGE_VIEWER_ORGANIZATION_ID", ""),
+        help="Optional fixed organization scope for every viewer query",
+    )
+    parser.add_argument(
+        "--tenant-auth-required",
+        action="store_true",
+        default=os.getenv("TRACEFORGE_VIEWER_TENANT_AUTH_REQUIRED", "").lower()
+        in {"1", "true", "yes", "on"},
+    )
     return parser
 
 
@@ -54,12 +66,25 @@ def main() -> int:
         client_id=args.client_id or None,
         auth=args.auth,
     )
-    viewer = ViewerServer(_split_host_port(args.http_address), repository)  # type: ignore[arg-type]
+    raw_signing_key = os.getenv("TRACEFORGE_TENANT_SIGNING_KEY", "").encode()
+    tenant_signer = (
+        TenantTokenSigner(raw_signing_key)
+        if len(raw_signing_key) >= 32
+        else None
+    )
+    viewer = ViewerServer(
+        _split_host_port(args.http_address),
+        repository,
+        tenant_token_signer=tenant_signer,
+        tenant_auth_required=args.tenant_auth_required,
+        fixed_organization_id=args.organization_id or None,
+    )
     LOGGER.info(
-        "read-only Kusto viewer=http://%s cluster=%s database=%s",
+        "read-only Kusto viewer=http://%s cluster=%s database=%s organization=%s",
         args.http_address,
         args.cluster_uri,
         args.database,
+        args.organization_id or "all",
     )
     try:
         viewer.serve_forever()
