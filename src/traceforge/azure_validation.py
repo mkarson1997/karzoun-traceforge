@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -126,9 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resource-group")
     parser.add_argument("--deployment-name")
     parser.add_argument("--gateway-endpoint")
-    parser.add_argument("--control-plane-url")
-    parser.add_argument("--api-key")
-    parser.add_argument("--tenant-token")
+    parser.add_argument("--control-plane-url", default=os.getenv("TRACEFORGE_CONTROL_PLANE_URL"))
+    parser.add_argument("--api-key", default=os.getenv("TRACEFORGE_API_KEY"))
+    parser.add_argument("--tenant-token", default=os.getenv("TRACEFORGE_TENANT_TOKEN"))
     parser.add_argument("--ca-file", type=Path)
     parser.add_argument("--client-cert-file", type=Path)
     parser.add_argument("--client-key-file", type=Path)
