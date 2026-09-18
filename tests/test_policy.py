@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from traceforge.adapters import build_export_request, normalize_records
 from traceforge.policy import builtin_policy, load_policy, render_policy
 
 
@@ -89,3 +90,36 @@ def test_policy_rejects_disallowed_adapter():
 
     with pytest.raises(ValueError, match="not allowed"):
         restricted.require_allowed("copilot")
+
+
+def test_adapter_request_applies_policy_metadata_and_capture_rules():
+    policy = builtin_policy("strict", "org_demo")
+    events = normalize_records(
+        "generic",
+        [
+            {
+                "type": "tool.completed",
+                "session_id": "session-1",
+                "attributes": {
+                    "tool.name": "shell",
+                    "gen_ai.request.model": "private-model-name",
+                    "gen_ai.usage.input_tokens": 12,
+                },
+            }
+        ],
+    )
+
+    request = build_export_request(events, policy=policy)
+    resource = {
+        item.key: item.value.string_value
+        for item in request.resource_spans[0].resource.attributes
+        if item.value.WhichOneof("value") == "string_value"
+    }
+    assert resource["traceforge.organization.id"] == "org_demo"
+    assert resource["traceforge.policy.profile"] == "strict"
+
+    span = request.resource_spans[0].scope_spans[0].spans[0]
+    keys = {item.key for item in span.attributes}
+    assert "tool.name" not in keys
+    assert "gen_ai.request.model" not in keys
+    assert "gen_ai.usage.input_tokens" in keys
