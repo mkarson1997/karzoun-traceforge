@@ -26,6 +26,12 @@ from traceforge.gateway.config import GatewayConfig
 from traceforge.gateway.otel_scrub import attach_privacy_summary, scrub_trace_export_request
 from traceforge.gateway.rate_limit import ClientRateLimiter
 from traceforge.privacy import Scrubber
+from traceforge.tenant_auth import (
+    TenantTokenError,
+    TenantTokenSigner,
+    bearer_token_from_metadata,
+    enforce_tenant_identity,
+)
 
 LOGGER = logging.getLogger("traceforge.gateway")
 
@@ -42,6 +48,8 @@ class PrivacyGateway(TraceServiceServicer):
         trusted_client_certificate_hashes: frozenset[str] = frozenset(),
         client_rate_limit_per_minute: int = 0,
         rate_limit_max_clients: int = 4096,
+        tenant_token_signer: TenantTokenSigner | None = None,
+        tenant_auth_required: bool = False,
     ) -> None:
         if max_inflight_exports < 1:
             raise ValueError("max_inflight_exports must be at least 1")
@@ -59,12 +67,15 @@ class PrivacyGateway(TraceServiceServicer):
             client_rate_limit_per_minute,
             max_clients=rate_limit_max_clients,
         )
+        self._tenant_token_signer = tenant_token_signer
+        self._tenant_auth_required = tenant_auth_required
         self.ready = True
 
         self._inflight_exports = 0
         self._accepted_exports_total = 0
         self._rejected_exports_total = 0
         self._client_auth_rejections_total = 0
+        self._tenant_auth_rejections_total = 0
         self._rate_limit_rejections_total = 0
         self._upstream_failures_total = 0
         self._scrub_findings_total = 0
@@ -79,10 +90,48 @@ class PrivacyGateway(TraceServiceServicer):
             if trust_forwarded_certificate
             else None
         )
+        tenant_claims = None
+        tenant_token = bearer_token_from_metadata(metadata)
+        if self._tenant_auth_required or tenant_token is not None:
+            if self._tenant_token_signer is None or tenant_token is None:
+                self._tenant_auth_rejections_total += 1
+                emit_audit_event(
+                    "otlp.tenant_auth",
+                    "denied",
+                    component="gateway",
+                    reason="missing_or_unconfigured_token",
+                )
+                await context.abort(
+                    grpc.StatusCode.UNAUTHENTICATED,
+                    "tenant authorization token is required",
+                )
+                return ExportTraceServiceResponse()
+            try:
+                tenant_claims = self._tenant_token_signer.verify(
+                    tenant_token,
+                    required_scope="ingest",
+                )
+            except TenantTokenError:
+                self._tenant_auth_rejections_total += 1
+                emit_audit_event(
+                    "otlp.tenant_auth",
+                    "denied",
+                    component="gateway",
+                    reason="invalid_or_expired_token",
+                )
+                await context.abort(
+                    grpc.StatusCode.UNAUTHENTICATED,
+                    "tenant authorization token is invalid or expired",
+                )
+                return ExportTraceServiceResponse()
+
         client_key = _rate_limit_client_key(
             context,
             metadata,
             trust_forwarded_certificate=trust_forwarded_certificate,
+            tenant_organization_id=(
+                tenant_claims.organization_id if tenant_claims is not None else None
+            ),
         )
         client_ref = stable_ref(client_key)
 
@@ -155,6 +204,8 @@ class PrivacyGateway(TraceServiceServicer):
             sanitized = type(request)()
             sanitized.CopyFrom(request)
             stats = scrub_trace_export_request(sanitized, self._scrubber)
+            if tenant_claims is not None:
+                enforce_tenant_identity(sanitized, tenant_claims.organization_id)
             export_id = uuid4().hex
             attach_privacy_summary(sanitized, stats, export_id=export_id)
 
@@ -203,6 +254,7 @@ class PrivacyGateway(TraceServiceServicer):
             "accepted_exports_total": self._accepted_exports_total,
             "rejected_exports_total": self._rejected_exports_total,
             "client_auth_rejections_total": self._client_auth_rejections_total,
+            "tenant_auth_rejections_total": self._tenant_auth_rejections_total,
             "rate_limit_rejections_total": self._rate_limit_rejections_total,
             "client_rate_limit_per_minute": self._rate_limiter.limit_per_minute,
             "rate_limit_tracked_clients": self._rate_limiter.tracked_clients,
@@ -238,6 +290,10 @@ class PrivacyGateway(TraceServiceServicer):
                 "# TYPE traceforge_gateway_client_auth_rejections_total counter",
                 "traceforge_gateway_client_auth_rejections_total "
                 f"{snapshot['client_auth_rejections_total']}",
+                "# HELP traceforge_gateway_tenant_auth_rejections_total OTLP exports rejected by tenant authorization.",
+                "# TYPE traceforge_gateway_tenant_auth_rejections_total counter",
+                "traceforge_gateway_tenant_auth_rejections_total "
+                f"{snapshot['tenant_auth_rejections_total']}",
                 "# HELP traceforge_gateway_rate_limit_rejections_total OTLP exports rejected by per-client rate limiting.",
                 "# TYPE traceforge_gateway_rate_limit_rejections_total counter",
                 "traceforge_gateway_rate_limit_rejections_total "
@@ -289,6 +345,12 @@ async def serve(config: GatewayConfig) -> None:
         trusted_client_certificate_hashes=config.trusted_client_certificate_hashes,
         client_rate_limit_per_minute=config.client_rate_limit_per_minute,
         rate_limit_max_clients=config.rate_limit_max_clients,
+        tenant_token_signer=(
+            TenantTokenSigner(config.tenant_signing_key)
+            if config.tenant_signing_key is not None
+            else None
+        ),
+        tenant_auth_required=config.tenant_auth_required,
     )
 
     server = grpc.aio.server(
@@ -339,7 +401,10 @@ def _rate_limit_client_key(
     metadata,
     *,
     trust_forwarded_certificate: bool,
+    tenant_organization_id: str | None = None,
 ) -> str:
+    if tenant_organization_id:
+        return f"tenant:{tenant_organization_id}"
     if trust_forwarded_certificate:
         certificate_hash = forwarded_client_certificate_hash(metadata)
         if certificate_hash:
