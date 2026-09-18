@@ -17,6 +17,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceS
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.trace.v1.trace_pb2 import Span, Status
 
+from traceforge.policy import OrganizationPolicy, load_policy
 from traceforge.privacy import Scrubber
 
 Scalar = str | int | bool | float
@@ -306,7 +307,10 @@ def normalize_records(
     return result
 
 
-def build_export_request(events: list[AdapterEvent]) -> ExportTraceServiceRequest:
+def build_export_request(
+    events: list[AdapterEvent],
+    policy: OrganizationPolicy | None = None,
+) -> ExportTraceServiceRequest:
     request = ExportTraceServiceRequest()
     if not events:
         return request
@@ -320,6 +324,10 @@ def build_export_request(events: list[AdapterEvent]) -> ExportTraceServiceReques
             _kv("traceforge.adapter.sources", ",".join(sources)),
         ]
     )
+    if policy is not None:
+        resource_spans.resource.attributes.extend(
+            [_kv(key, value) for key, value in policy.metadata().items()]
+        )
     scope_spans = resource_spans.scope_spans.add()
     scope_spans.scope.name = "traceforge.adapters"
     scope_spans.scope.version = "0.1.0"
@@ -343,7 +351,11 @@ def build_export_request(events: list[AdapterEvent]) -> ExportTraceServiceReques
             attributes["traceforge.session.id"] = event.session_id
         if event.task_id:
             attributes["traceforge.task.id"] = event.task_id
-        attributes.update(event.attributes)
+        event_attributes = dict(event.attributes)
+        if policy is not None:
+            policy.require_allowed(event.source)
+            event_attributes = policy.filter_attributes(event_attributes)
+        attributes.update(event_attributes)
 
         scrubbed = scrubber.scrub(attributes, path="$.adapter").value
         safe_attributes = _scalar_attributes(scrubbed)
@@ -385,6 +397,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ca-file", type=Path)
     parser.add_argument("--client-cert-file", type=Path)
     parser.add_argument("--client-key-file", type=Path)
+    parser.add_argument("--policy-file", type=Path)
     return parser
 
 
@@ -396,6 +409,22 @@ def main() -> int:
         raise SystemExit(
             "--client-cert-file and --client-key-file must be provided together"
         )
+
+    policy: OrganizationPolicy | None = None
+    if args.policy_file is not None:
+        try:
+            policy = load_policy(args.policy_file)
+            policy.require_allowed(args.adapter)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"traceforge-adapter: policy error: {exc}", file=sys.stderr)
+            return 2
+        if args.batch_size > policy.max_batch_size:
+            print(
+                "traceforge-adapter: --batch-size exceeds organization policy limit "
+                f"({policy.max_batch_size})",
+                file=sys.stderr,
+            )
+            return 2
 
     adapter = create_adapter(args.adapter)
     normalized = 0
@@ -422,11 +451,11 @@ def main() -> int:
             normalized += 1
             buffer.append(event)
             if len(buffer) >= args.batch_size:
-                _flush(buffer, stub, args.timeout_seconds)
+                _flush(buffer, stub, args.timeout_seconds, policy)
                 batches += 1
                 buffer.clear()
         if buffer:
-            _flush(buffer, stub, args.timeout_seconds)
+            _flush(buffer, stub, args.timeout_seconds, policy)
             batches += 1
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"traceforge-adapter: {exc}", file=sys.stderr)
@@ -460,8 +489,9 @@ def _flush(
     events: list[AdapterEvent],
     stub: TraceServiceStub | None,
     timeout_seconds: float,
+    policy: OrganizationPolicy | None,
 ) -> None:
-    request = build_export_request(events)
+    request = build_export_request(events, policy=policy)
     if stub is not None:
         stub.Export(request, timeout=timeout_seconds)
 
