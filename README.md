@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4 and M6 are complete. The M5 Azure production profile is implemented in code with real-subscription validation still outstanding. M7 now includes coding-agent adapters, organization policy controls, and a multi-tenant control plane; commercial packaging remains.
+> Status: engineering preview. M0-M4, M6, and M7 are implemented. The remaining production gate is M5 live Azure subscription validation of networking, identity, ingestion, and rollback behavior.
 
 ## Why TraceForge
 
@@ -34,7 +34,7 @@ Central OpenTelemetry Collector
 
 The local profile uses SQLite WAL behind the same read-only viewer contract. The hardened Azure profile can place Container Apps inside a dedicated VNet and route Key Vault, ADLS, and ADX through Azure Private Link.
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/adapters.md](docs/adapters.md), [docs/policies.md](docs/policies.md), [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/azure-deployment.md](docs/azure-deployment.md), and [docs/roadmap.md](docs/roadmap.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/adapters.md](docs/adapters.md), [docs/policies.md](docs/policies.md), [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/azure-deployment.md](docs/azure-deployment.md), [docs/deployment-guide.md](docs/deployment-guide.md), [docs/commercial-packaging.md](docs/commercial-packaging.md), and [docs/roadmap.md](docs/roadmap.md).
 
 ## Implemented
 
@@ -97,7 +97,35 @@ deployment can replace the registry persistence layer with a managed transaction
 
 See [docs/multi-tenancy.md](docs/multi-tenancy.md).
 
-### Azure production profile
+### Self-hosted product profile
+
+A tenant-aware single-node product profile is available at `deploy/compose/product.yml`.
+
+Create a private environment file from the example, replace the signing key, then start the stack:
+
+```bash
+cp deploy/compose/product.env.example .traceforge.env
+docker compose --env-file .traceforge.env -f deploy/compose/product.yml up --build -d
+```
+
+By default the control plane, health endpoint, and local viewer bind to loopback while OTLP ingress
+uses port 4317. The self-hosted profile requires an external TLS/mTLS boundary before public
+Internet exposure.
+
+See [docs/deployment-guide.md](docs/deployment-guide.md) and
+[docs/multi-tenancy.md](docs/multi-tenancy.md).
+
+## Release packaging
+
+The `.github/workflows/package.yml` workflow builds Python distributions, validates every container
+image and the product Compose profile, generates dependency/SBOM evidence, creates SHA-256
+checksums, and assembles a versioned technical handoff artifact. It does not automatically publish
+commercial images to a public registry.
+
+See [docs/commercial-packaging.md](docs/commercial-packaging.md), [SECURITY.md](SECURITY.md), and
+[SUPPORT.md](SUPPORT.md).
+
+## Azure production profile
 
 - Bicep infrastructure with Azure Container Apps
 - Separate gateway, collector, and viewer managed identities
@@ -297,7 +325,7 @@ The protected viewer is deployed only when ADX is enabled and both `viewerImage`
 
 M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
 
-M6 security and reliability hardening is complete, including inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 productization now includes coding-agent adapters, organization policy controls, and a multi-tenant control plane. Commercial deployment packaging is the remaining M7 item.
+M6 security and reliability hardening is complete. M7 productization is also complete in the reference implementation: coding-agent adapters, organization policy controls, the multi-tenant control plane, self-hosted product Compose profile, release handoff workflow, deployment guidance, and commercial packaging boundaries are all present. The remaining production gate is M5 live Azure validation.
 
 ## Commercial status
 
