@@ -80,3 +80,14 @@
 - [x] Policy profiles and organization controls
 - [x] Multi-tenant control plane
 - [x] Deployment guide and commercial packaging
+
+
+## M8 - Tenant query isolation
+
+- [x] Composite organization-aware local trace and privacy-export identities
+- [x] Organization-scoped local stats, sessions, traces, search, privacy, and dataset export
+- [x] Parameterized organization filters in every ADX/Kusto viewer query path
+- [x] Short-lived viewer tokens with dedicated viewer:read scope
+- [x] Tenant-authenticated self-hosted viewer APIs and browser token handoff
+- [x] Optional fixed organization scope for Entra-protected Azure viewers
+- [x] Cross-tenant collision and query-isolation regression tests
