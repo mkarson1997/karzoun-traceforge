@@ -30,6 +30,8 @@ Reports are especially useful when they involve:
 - authentication or authorization bypasses on the production viewer
 - Kusto query injection or managed-identity privilege escalation
 - cross-tenant or cross-session data exposure
+- viewer-token bypasses or organization-filter bypasses
+- cross-tenant trace/span identifier collision or overwrite paths
 - unsafe archive/export behavior
 - denial-of-service paths that bypass admission controls
 - dependency or container supply-chain compromise
