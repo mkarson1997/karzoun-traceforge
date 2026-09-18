@@ -21,6 +21,7 @@ _BASE_EXTEND = r'''
     TraceAttributes["gen_ai.system"]
   ))
 | extend service_name = tostring(ResourceAttributes["service.name"])
+| extend organization_id = tostring(ResourceAttributes["traceforge.organization.id"])
 | extend status_code = case(
     toupper(SpanStatus) contains "ERROR", 2,
     toupper(SpanStatus) contains "OK", 1,
@@ -68,12 +69,27 @@ class KustoTraceRepository:
         if callable(close):
             close()
 
-    def stats(self) -> dict[str, int | str | None]:
+    def stats(
+        self,
+        *,
+        organization_id: str | None = None,
+    ) -> dict[str, int | str | None]:
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
+        org_declaration = (
+            "declare query_parameters(tf_org:string);\n"
+            if organization_id is not None
+            else ""
+        )
+        org_parameters = {"tf_org": organization_id} if organization_id is not None else None
         trace_rows = self._execute(
-            """
+            org_declaration
+            + """
 OTELTraces
 """
             + _BASE_EXTEND
+            + org_filter
             + """
 | summarize
     spans=count(),
@@ -81,15 +97,21 @@ OTELTraces
     sessions=dcountif(session_id, isnotempty(session_id)),
     tasks=dcountif(task_id, isnotempty(task_id)),
     last_ingested_at=max(EndTime)
-"""
+""",
+            org_parameters,
         )
         privacy_rows = self._execute(
-            """
+            org_declaration
+            + """
 OTELTraces
+| extend organization_id=tostring(ResourceAttributes["traceforge.organization.id"])
 | extend export_id=tostring(ResourceAttributes["traceforge.privacy.export_id"])
 | extend findings=tolong(ResourceAttributes["traceforge.privacy.findings"])
 | extend attributes_removed=tolong(ResourceAttributes["traceforge.privacy.attributes_removed"])
 | extend attributes_rewritten=tolong(ResourceAttributes["traceforge.privacy.attributes_rewritten"])
+"""
+            + org_filter
+            + """
 | where isnotempty(export_id)
 | summarize
     findings=max(findings),
@@ -101,7 +123,8 @@ OTELTraces
     privacy_findings=sum(findings),
     privacy_attributes_removed=sum(attributes_removed),
     privacy_attributes_rewritten=sum(attributes_rewritten)
-"""
+""",
+            org_parameters,
         )
         base = trace_rows[0] if trace_rows else {}
         privacy = privacy_rows[0] if privacy_rows else {}
@@ -121,13 +144,28 @@ OTELTraces
             ),
         }
 
-    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        limit: int = 50,
+        *,
+        organization_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 200))
+        org_declaration = (
+            "declare query_parameters(tf_org:string);\n"
+            if organization_id is not None
+            else ""
+        )
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
         rows = self._execute(
-            """
+            org_declaration
+            + """
 OTELTraces
 """
             + _BASE_EXTEND
+            + org_filter
             + f"""
 | extend session_key=iff(isempty(session_id), "unassigned", session_id)
 | summarize
@@ -140,7 +178,8 @@ OTELTraces
     trace_count=dcount(TraceID)
   by session_id=session_key
 | top {safe_limit} by end_time desc
-"""
+""",
+            {"tf_org": organization_id} if organization_id is not None else None,
         )
         return [
             {
@@ -156,11 +195,25 @@ OTELTraces
             for row in rows
         ]
 
-    def list_traces_for_session(self, session_id: str) -> list[dict[str, Any]]:
+    def list_traces_for_session(
+        self,
+        session_id: str,
+        *,
+        organization_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        declaration = (
+            "declare query_parameters(tf_session:string, tf_org:string);\n"
+            if organization_id is not None
+            else "declare query_parameters(tf_session:string);\n"
+        )
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
         query = (
-            "declare query_parameters(tf_session:string);\n"
-            "OTELTraces\n"
+            declaration
+            + "OTELTraces\n"
             + _BASE_EXTEND
+            + org_filter
             + """
 | where (tf_session == "unassigned" and isempty(session_id))
     or (tf_session != "unassigned" and session_id == tf_session)
@@ -175,7 +228,10 @@ OTELTraces
 | order by start_time desc
 """
         )
-        rows = self._execute(query, {"tf_session": session_id})
+        parameters: dict[str, Any] = {"tf_session": session_id}
+        if organization_id is not None:
+            parameters["tf_org"] = organization_id
+        rows = self._execute(query, parameters)
         return [
             {
                 "trace_id": str(row.get("trace_id") or "").lower(),
@@ -189,11 +245,25 @@ OTELTraces
             for row in rows
         ]
 
-    def get_trace(self, trace_id: str) -> dict[str, Any] | None:
+    def get_trace(
+        self,
+        trace_id: str,
+        *,
+        organization_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        declaration = (
+            "declare query_parameters(tf_trace:string, tf_org:string);\n"
+            if organization_id is not None
+            else "declare query_parameters(tf_trace:string);\n"
+        )
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
         query = (
-            "declare query_parameters(tf_trace:string);\n"
-            "OTELTraces\n"
+            declaration
+            + "OTELTraces\n"
             + _BASE_EXTEND
+            + org_filter
             + """
 | where tolower(TraceID) == tolower(tf_trace)
 | project
@@ -217,7 +287,10 @@ OTELTraces
 | order by start_time asc, span_id asc
 """
         )
-        rows = self._execute(query, {"tf_trace": trace_id})
+        parameters: dict[str, Any] = {"tf_trace": trace_id}
+        if organization_id is not None:
+            parameters["tf_org"] = organization_id
+        rows = self._execute(query, parameters)
         if not rows:
             return None
         spans = [_span_from_row(row) for row in rows]
@@ -236,13 +309,24 @@ OTELTraces
         agent: str | None = None,
         status_code: int | None = None,
         limit: int = 100,
+        organization_id: str | None = None,
     ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 500))
+        declaration = (
+            "declare query_parameters(tf_query:string, tf_service:string, "
+            "tf_agent:string, tf_status:long, tf_org:string);\n"
+            if organization_id is not None
+            else "declare query_parameters(tf_query:string, tf_service:string, "
+            "tf_agent:string, tf_status:long);\n"
+        )
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
         kql = (
-            "declare query_parameters("
-            "tf_query:string, tf_service:string, tf_agent:string, tf_status:long);\n"
-            "OTELTraces\n"
+            declaration
+            + "OTELTraces\n"
             + _BASE_EXTEND
+            + org_filter
             + f"""
 | where isempty(tf_query)
     or tolower(TraceID) contains tolower(tf_query)
@@ -285,15 +369,31 @@ OTELTraces
                 "tf_service": service or "",
                 "tf_agent": agent or "",
                 "tf_status": status_code if status_code is not None else -1,
+                **({"tf_org": organization_id} if organization_id is not None else {}),
             },
         )
         return [_span_from_row(row) for row in rows]
 
-    def list_privacy_exports(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_privacy_exports(
+        self,
+        limit: int = 50,
+        *,
+        organization_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 500))
+        org_declaration = (
+            "declare query_parameters(tf_org:string);\n"
+            if organization_id is not None
+            else ""
+        )
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
         rows = self._execute(
-            f"""
+            org_declaration
+            + f"""
 OTELTraces
+| extend organization_id=tostring(ResourceAttributes["traceforge.organization.id"])
 | extend export_id=tostring(ResourceAttributes["traceforge.privacy.export_id"])
 | extend findings=tolong(ResourceAttributes["traceforge.privacy.findings"])
 | extend attributes_removed=tolong(ResourceAttributes["traceforge.privacy.attributes_removed"])
@@ -301,6 +401,9 @@ OTELTraces
 | extend spans_seen=tolong(ResourceAttributes["traceforge.privacy.spans_seen"])
 | extend events_seen=tolong(ResourceAttributes["traceforge.privacy.events_seen"])
 | extend links_seen=tolong(ResourceAttributes["traceforge.privacy.links_seen"])
+"""
+            + org_filter
+            + """
 | where isnotempty(export_id)
 | summarize
     findings=max(findings),
@@ -312,7 +415,8 @@ OTELTraces
     ingested_at=max(EndTime)
   by export_id
 | top {safe_limit} by ingested_at desc
-"""
+""",
+            {"tf_org": organization_id} if organization_id is not None else None,
         )
         return [
             {
@@ -334,12 +438,22 @@ OTELTraces
         session_id: str | None = None,
         task_id: str | None = None,
         limit: int = 10_000,
+        organization_id: str | None = None,
     ) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 100_000))
+        declaration = (
+            "declare query_parameters(tf_session:string, tf_task:string, tf_org:string);\n"
+            if organization_id is not None
+            else "declare query_parameters(tf_session:string, tf_task:string);\n"
+        )
+        org_filter = (
+            "| where organization_id == tf_org\n" if organization_id is not None else ""
+        )
         query = (
-            "declare query_parameters(tf_session:string, tf_task:string);\n"
-            "OTELTraces\n"
+            declaration
+            + "OTELTraces\n"
             + _BASE_EXTEND
+            + org_filter
             + f"""
 | where isempty(tf_session) or session_id == tf_session
 | where isempty(tf_task) or task_id == tf_task
@@ -366,7 +480,11 @@ OTELTraces
         )
         rows = self._execute(
             query,
-            {"tf_session": session_id or "", "tf_task": task_id or ""},
+            {
+                "tf_session": session_id or "",
+                "tf_task": task_id or "",
+                **({"tf_org": organization_id} if organization_id is not None else {}),
+            },
         )
         return [_span_from_row(row) for row in rows]
 
