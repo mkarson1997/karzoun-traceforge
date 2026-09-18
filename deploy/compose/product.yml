@@ -82,6 +82,18 @@ services:
       - "127.0.0.1:${TRACEFORGE_HEALTH_PORT:-8080}:8080"
     restart: unless-stopped
 
+
+  operations:
+    profiles: ["ops"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile.control-plane
+    entrypoint: ["traceforge-ops"]
+    volumes:
+      - traceforge-tenant-data:/tenant-data
+      - traceforge-trace-data:/trace-data
+      - ${TRACEFORGE_BACKUP_DIR:-./traceforge-backups}:/backups
+
 volumes:
   traceforge-tenant-data:
   traceforge-trace-data:
