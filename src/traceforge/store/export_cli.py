@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default="./traceforge.db")
     parser.add_argument("--session")
     parser.add_argument("--task")
+    parser.add_argument("--organization")
     parser.add_argument("--limit", type=int, default=10_000)
     parser.add_argument("--output", help="Output file; stdout when omitted")
     return parser
@@ -26,6 +27,7 @@ def main() -> int:
         session_id=args.session,
         task_id=args.task,
         limit=args.limit,
+        organization_id=args.organization,
     )
 
     if args.output:
