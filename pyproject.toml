@@ -37,6 +37,7 @@ traceforge-export = "traceforge.store.export_cli:main"
 traceforge-kusto-viewer = "traceforge.kusto.viewer_server:main"
 traceforge-benchmark = "traceforge.benchmark:main"
 traceforge-adapter = "traceforge.adapters:main"
+traceforge-policy = "traceforge.policy:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traceforge"]
