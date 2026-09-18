@@ -111,7 +111,7 @@ OTELTraces
 | extend attributes_rewritten=tolong(ResourceAttributes["traceforge.privacy.attributes_rewritten"])
 """
             + org_filter
-            + f"""
+            + """
 | where isnotempty(export_id)
 | summarize
     findings=max(findings),
@@ -403,7 +403,7 @@ OTELTraces
 | extend links_seen=tolong(ResourceAttributes["traceforge.privacy.links_seen"])
 """
             + org_filter
-            + """
+            + f"""
 | where isnotempty(export_id)
 | summarize
     findings=max(findings),
