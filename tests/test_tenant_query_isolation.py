@@ -5,7 +5,6 @@ import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-import grpc
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 
 from traceforge.demo import build_demo_request
