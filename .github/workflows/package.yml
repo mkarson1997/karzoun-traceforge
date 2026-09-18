@@ -69,7 +69,7 @@ jobs:
         run: |
           mkdir -p handoff/docs handoff/deploy/compose
           cp LICENSE SECURITY.md SUPPORT.md CHANGELOG.md README.md handoff/
-          cp docs/architecture.md docs/threat-model.md docs/data-model.md docs/adapters.md docs/policies.md docs/multi-tenancy.md docs/retention.md docs/deployment-guide.md docs/commercial-packaging.md docs/azure-deployment.md handoff/docs/
+          cp docs/architecture.md docs/threat-model.md docs/data-model.md docs/adapters.md docs/policies.md docs/multi-tenancy.md docs/retention.md docs/operations.md docs/deployment-guide.md docs/commercial-packaging.md docs/azure-deployment.md handoff/docs/
           cp deploy/compose/product.yml deploy/compose/product.env.example handoff/deploy/compose/
           cp dist/* handoff/
           git rev-parse HEAD > handoff/COMMIT_SHA
