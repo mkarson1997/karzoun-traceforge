@@ -54,6 +54,30 @@ Issue an endpoint API key:
 Store the printed API key immediately in the endpoint secret store. TraceForge stores only a salted
 hash and cannot recover the plaintext later.
 
+Issue a separate viewer API key:
+
+    docker compose \
+      --env-file .traceforge.env \
+      -f deploy/compose/product.yml \
+      exec tenant-control-plane \
+      traceforge-tenants --db /data/traceforge-tenants.db issue-key \
+        --org org_demo \
+        --label viewer \
+        --scopes viewer:read
+
+Exchange the viewer API key for a short-lived token:
+
+    curl -sS -X POST \
+      -H "Authorization: Bearer <viewer-api-key>" \
+      http://127.0.0.1:8090/v1/viewer-token
+
+Open the local viewer with the returned token in the URL fragment:
+
+    http://127.0.0.1:8081/#token=<short-lived-viewer-token>
+
+The product profile requires viewer tenant authorization. The token is removed from the visible URL
+after page load and is kept only in browser session storage.
+
 ### Connect an adapter
 
 On the developer endpoint:
@@ -157,9 +181,12 @@ Before treating a deployment as production-ready, verify:
 - privacy regression tests pass
 - dependency audit, CodeQL, Gitleaks, and SBOM jobs pass
 - tenant spoofing test passes
+- identical trace/span IDs from different organizations remain isolated
+- viewer APIs reject missing, expired, or wrong-scope viewer tokens
 - gateway rejects missing/expired/invalid tenant tokens when tenant auth is required
 - retention is configured for every durable store
 - viewer authentication and authorization are enabled
+- every shared viewer deployment has an explicit organization query scope or a documented admin-only cross-tenant role
 - external transport is TLS-protected
 - backups and restore procedure are tested
 - rate limits and capacity limits are appropriate for expected traffic
