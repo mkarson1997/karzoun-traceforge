@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4 are complete in the local reference stack. The M5 Azure production profile now includes ADX-backed viewing, Microsoft Entra authentication, VNet integration, Private DNS, and optional Private Endpoints with public-network shutdown for sensitive PaaS dependencies. Real-subscription validation remains.
+> Status: engineering preview. M0-M4 and M6 are complete. The M5 Azure production profile is implemented in code with real-subscription validation still outstanding. M7 productization is underway, starting with pluggable Codex, Claude Code, GitHub Copilot, and generic event adapters.
 
 ## Why TraceForge
 
@@ -63,6 +63,19 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 - Defense-in-depth scrubbing at storage ingress
 - Synthetic coding-agent generator containing deliberate privacy test vectors
 - CI regression tests proving fake prompts, source code, email addresses, and credentials do not reach persistent storage or exports
+
+### Coding-agent adapters
+
+- Vendor-neutral adapter event model
+- Codex JSON Lines normalization
+- Claude Code stream-json normalization
+- GitHub Copilot hook payload normalization
+- Generic JSON/JSONL adapter contract
+- Adapter-side privacy scrubbing before OTLP serialization
+- Bounded metadata capture that excludes prompts, commands, tool payloads, and assistant text
+- TLS/mTLS export support through the traceforge-adapter CLI
+
+See [docs/adapters.md](docs/adapters.md) for usage and the generic event contract.
 
 ### Azure production profile
 
@@ -263,7 +276,7 @@ The protected viewer is deployed only when ADX is enabled and both `viewerImage`
 
 M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
 
-M6 hardens security and reliability with inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 packages agent adapters, organization policy, multi-tenancy, and commercial deployment workflows.
+M6 security and reliability hardening is complete, including inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 productization is underway: coding-agent adapters are complete, with organization policy, multi-tenancy, and commercial deployment workflows next.
 
 ## Commercial status
 
