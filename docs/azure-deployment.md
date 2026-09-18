@@ -405,6 +405,39 @@ The gateway identity receives Key Vault Secrets User. The secret value is never 
 - Raw prompt/source/body fields are still removed by the same privacy kernel before the collector receives them.
 - User-controlled viewer search values are passed to ADX as query parameters instead of being concatenated into KQL.
 
+## Live validation CLI
+
+`traceforge-azure-validate` turns the final M5 checks into a repeatable operator command. It can
+read deployment outputs through Azure CLI, assert the hardened controls selected for the
+deployment, bootstrap a tenant token from the control plane, and send a TLS OTLP synthetic trace.
+
+Example for the hardened profile:
+
+```bash
+export TRACEFORGE_CONTROL_PLANE_URL=https://<control-plane-host>
+export TRACEFORGE_API_KEY='<tenant-api-key>'
+
+traceforge-azure-validate \
+  --resource-group <resource-group> \
+  --deployment-name <deployment-name> \
+  --require-private \
+  --require-mtls \
+  --require-tenant-auth \
+  --require-viewer \
+  --client-cert-file ./client.crt \
+  --client-key-file ./client.key
+```
+
+For a deployment without the tenant control plane, a short-lived token can instead be supplied
+through `TRACEFORGE_TENANT_TOKEN`. Avoid placing API keys or tenant tokens directly in shell
+history.
+
+The CLI checks deployment outputs and verifies that the public OTLP gateway accepts the synthetic
+request over TLS with the selected authentication controls. Persisted-data inspection, Private DNS
+resolution from inside the Container Apps environment, Entra browser callback behavior, and
+rollback/redeployment remain explicit live-subscription checks because they require access to the
+deployed Azure resources.
+
 ## Remaining M5 validation
 
 The Azure production profile now has the gateway, collector, Azure Monitor sink, optional ADX ingestion, optional archive sink, ADX-backed viewer, least-privilege viewer identity, Entra edge authentication, optional client-certificate mTLS authorization, VNet integration, Private DNS, and service Private Endpoints in code.
