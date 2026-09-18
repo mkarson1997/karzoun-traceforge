@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from traceforge.audit import emit_audit_event, stable_ref
 from traceforge.policy import OrganizationPolicy, builtin_policy, load_policy, render_policy
@@ -609,9 +609,23 @@ def _policy_from_payload(payload: dict[str, Any]) -> OrganizationPolicy:
     )
 
 
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req,
+        fp,
+        code,
+        msg,
+        headers,
+        newurl,
+    ):
+        return None
+
+
 def _http_json(request: Request, timeout_seconds: float) -> dict[str, Any]:
+    opener = build_opener(_RejectRedirects())
     try:
-        with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+        with opener.open(request, timeout=timeout_seconds) as response:
             payload = json.loads(response.read().decode())
     except HTTPError as exc:
         detail = exc.read().decode(errors="replace")
