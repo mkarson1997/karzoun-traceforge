@@ -45,6 +45,8 @@ class GatewayConfig:
     redact_pii: bool = True
     detect_high_entropy: bool = True
     tokenization_key: bytes | None = None
+    tenant_signing_key: bytes | None = None
+    tenant_auth_required: bool = False
 
     def __post_init__(self) -> None:
         if self.max_receive_message_mib < 1:
@@ -59,11 +61,16 @@ class GatewayConfig:
             raise ValueError("client_rate_limit_per_minute must be zero or greater")
         if self.rate_limit_max_clients < 1:
             raise ValueError("rate_limit_max_clients must be at least 1")
+        if self.tenant_signing_key is not None and len(self.tenant_signing_key) < 32:
+            raise ValueError("tenant_signing_key must be at least 32 bytes")
+        if self.tenant_auth_required and self.tenant_signing_key is None:
+            raise ValueError("tenant_auth_required needs TRACEFORGE_TENANT_SIGNING_KEY")
 
     @classmethod
     def from_env(cls) -> GatewayConfig:
         mode = RedactionMode(os.getenv("TRACEFORGE_REDACTION_MODE", "redact"))
         raw_key = os.getenv("TRACEFORGE_TOKENIZATION_KEY")
+        raw_tenant_key = os.getenv("TRACEFORGE_TENANT_SIGNING_KEY")
         return cls(
             listen_address=os.getenv("TRACEFORGE_LISTEN_ADDRESS", "0.0.0.0:4317"),
             health_address=os.getenv("TRACEFORGE_HEALTH_ADDRESS", "0.0.0.0:8080"),
@@ -95,6 +102,8 @@ class GatewayConfig:
             redact_pii=_env_bool("TRACEFORGE_REDACT_PII", True),
             detect_high_entropy=_env_bool("TRACEFORGE_DETECT_HIGH_ENTROPY", True),
             tokenization_key=raw_key.encode("utf-8") if raw_key else None,
+            tenant_signing_key=raw_tenant_key.encode("utf-8") if raw_tenant_key else None,
+            tenant_auth_required=_env_bool("TRACEFORGE_TENANT_AUTH_REQUIRED", False),
         )
 
     def privacy_policy(self) -> PrivacyPolicy:
