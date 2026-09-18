@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4, M6, and M7 are implemented. The remaining production gate is M5 live Azure subscription validation of networking, identity, ingestion, and rollback behavior.
+> Status: engineering preview. M0-M4 and M6-M8 are implemented. The remaining production gate is M5 live Azure subscription validation of networking, identity, ingestion, and rollback behavior.
 
 ## Why TraceForge
 
@@ -54,7 +54,7 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 ### Correlation and local viewer
 
 - Central OpenTelemetry Collector with queued/retried delivery
-- SQLite WAL reference trace store with idempotent `(trace_id, span_id)` upserts
+- SQLite WAL reference trace store with tenant-safe `(organization_id, trace_id, span_id)` upserts
 - task -> session -> trace correlation
 - Read-only JSON API and browser trace timeline
 - Sanitized span search across IDs, names, agent/service fields, attributes, and events
@@ -84,11 +84,14 @@ See [docs/adapters.md](docs/adapters.md) for usage and the generic event contrac
 - Organization registry with active/suspended lifecycle
 - Per-organization effective policy delivery
 - Salted PBKDF2-hashed API keys with scoped access and revocation
-- Short-lived HMAC-signed ingest tokens
+- Short-lived HMAC-signed ingest and viewer tokens
 - Adapter bootstrap through policy and ingest-token endpoints
 - Gateway-side token verification and authenticated organization enforcement
 - Client-supplied organization IDs are overwritten at the gateway
 - Authenticated organization identity participates in per-tenant rate limiting
+- Tenant-scoped viewer APIs and sanitized exports
+- Parameterized tenant filters in the ADX/Kusto query layer
+- Cross-tenant trace/span collision protection in the local store
 - Non-root control-plane container image with persistent reference volume
 
 The reference control-plane database is SQLite WAL for a single durable instance. The tenant-token
@@ -325,7 +328,7 @@ The protected viewer is deployed only when ADX is enabled and both `viewerImage`
 
 M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
 
-M6 security and reliability hardening is complete. M7 productization is also complete in the reference implementation: coding-agent adapters, organization policy controls, the multi-tenant control plane, self-hosted product Compose profile, release handoff workflow, deployment guidance, and commercial packaging boundaries are all present. The remaining production gate is M5 live Azure validation.
+M6 security and reliability hardening, M7 productization, and M8 tenant query isolation are complete in the reference implementation. The remaining production gate is M5 live Azure validation.
 
 ## Commercial status
 
