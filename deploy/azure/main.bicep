@@ -23,6 +23,9 @@ param entraClientId string = ''
 @description('Microsoft Entra tenant ID that owns the viewer app registration.')
 param entraTenantId string = tenant().tenantId
 
+@description('Optional organization ID that scopes every production viewer query. Recommended when a shared ADX database contains multiple organizations.')
+param viewerOrganizationId string = ''
+
 @description('SHA-256 client certificate thumbprints allowed to send OTLP. A non-empty list enables required mTLS at Container Apps ingress and gateway-side thumbprint authorization.')
 param gatewayTrustedClientCertificateHashes array = []
 
@@ -696,6 +699,10 @@ resource viewerApp 'Microsoft.App/containerApps@2026-01-01' = if (deployViewer) 
               name: 'AZURE_CLIENT_ID'
               value: viewerIdentity.properties.clientId
             }
+            {
+              name: 'TRACEFORGE_VIEWER_ORGANIZATION_ID'
+              value: viewerOrganizationId
+            }
           ]
           resources: {
             cpu: json('0.5')
@@ -760,6 +767,7 @@ output gatewayClientRateLimitPerMinute int = gatewayClientRateLimitPerMinute
 output collectorFqdn string = collectorApp.properties.configuration.ingress.fqdn
 output viewerFqdn string = deployViewer ? viewerApp.properties.configuration.ingress.fqdn : ''
 output viewerUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}' : ''
+output viewerOrganizationId string = viewerOrganizationId
 output viewerCallbackUrl string = deployViewer ? 'https://${viewerApp.properties.configuration.ingress.fqdn}/.auth/login/aad/callback' : ''
 output virtualNetworkId string = enableVnetIntegration ? networking.outputs.vnetId : ''
 output infrastructureSubnetId string = enableVnetIntegration ? networking.outputs.infrastructureSubnetId : ''
