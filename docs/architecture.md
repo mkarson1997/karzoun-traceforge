@@ -10,14 +10,16 @@ TraceForge is a privacy-first telemetry pipeline for AI coding agents and develo
 2. **Edge collector**: local OpenTelemetry receiver and batching layer. It only listens on loopback by default.
 3. **Privacy gateway**: mandatory boundary where policy, secret detection, tokenization, and redaction are enforced.
 4. **Central telemetry plane**: sanitized telemetry only.
-5. **Viewer and query plane**: read-only access for authenticated users through Microsoft Entra ID and a dedicated query identity.
+5. **Tenant control plane**: organization lifecycle, policy delivery, scoped API-key authentication, and short-lived ingest-token issuance.
+6. **Viewer and query plane**: read-only access for authenticated users through Microsoft Entra ID and a dedicated query identity.
 
 ## Target data path
 
 ```mermaid
 flowchart LR
-  A[AI coding agent / developer tool] -->|OTLP localhost| B[Edge OTel Collector]
-  B -->|OTLP TLS/mTLS| C[TraceForge Privacy Gateway]
+  K[Tenant Control Plane] -->|policy + short-lived ingest token| A[AI coding agent / developer tool]
+  A -->|OTLP localhost / adapter| B[Edge OTel Collector]
+  B -->|OTLP TLS/mTLS + tenant token| C[TraceForge Privacy Gateway]
   C -->|sanitized OTLP only| D[Central OTel Collector]
   D --> E[Azure Monitor / Application Insights]
   D --> F[Azure Data Explorer / Kusto]
@@ -38,6 +40,7 @@ In the hardened Azure profile, the Container Apps environment is attached to a d
 - **No raw prompt or source capture by default**: prompt, completion, source content, request bodies, response bodies, and database statements are dropped unless an explicit policy enables a safer derived representation.
 - **Stable correlation without plaintext**: optional HMAC tokenization allows equality correlation while hiding the original value.
 - **Least privilege**: ingestion identities cannot query by default; viewer identities receive query-only database permissions and do not mutate ingestion policy.
+- **Authenticated tenancy over claimed tenancy**: the gateway verifies a signed tenant token and overwrites any organization ID supplied by an endpoint before centralized persistence.
 - **Private PaaS dependencies**: production mode can remove public data-plane reachability for Key Vault, ADLS, and ADX while keeping only the intended gateway/viewer application surfaces exposed.
 - **Portable core, Azure production profile**: the privacy core and OTLP pipeline remain portable, while the reference production deployment targets Azure Container Apps, Azure Monitor, ADX/Kusto, Blob/ADLS, Key Vault, Entra ID, VNet integration, and Azure Private Link.
 
@@ -107,11 +110,25 @@ The privacy gateway remains externally reachable because it is the product's int
 
 ### Edge agent
 
-OpenTelemetry Collector Contrib on developer machines. Receives OTLP on loopback, enriches resource metadata, batches, and forwards to the privacy gateway. Future adapters will cover GitHub Copilot CLI, Claude Code, Codex, and generic command wrappers.
+OpenTelemetry Collector Contrib and/or TraceForge adapters run on developer machines. The adapter layer currently normalizes GitHub Copilot hook events, Claude Code stream JSON, Codex JSON Lines, and a generic JSON/JSONL contract while intentionally excluding raw prompts, commands, tool payloads, and assistant text.
 
 ### Privacy gateway
 
-Python service that terminates OTLP, recursively scrubs resource/span/event attributes, drops prohibited content fields, detects known credential formats and high-entropy tokens, optionally tokenizes selected values, then forwards sanitized telemetry.
+Python service that terminates OTLP, verifies optional or required short-lived tenant ingest tokens, recursively scrubs resource/span/event attributes, drops prohibited content fields, detects known credential formats and high-entropy tokens, optionally tokenizes selected values, overwrites tenant identity from authenticated claims, then forwards sanitized telemetry.
+
+### Tenant control plane
+
+The M7 reference control plane manages organizations, effective capture policy, scoped API keys,
+revocation, and short-lived signed ingest tokens. API-key plaintext is never stored. Endpoint
+adapters use the API key only with the control plane; the OTLP gateway receives a short-lived token
+instead.
+
+The gateway verifies signature, expiration, issuer, and the ingest scope. It then replaces any
+client-supplied organization attribute with the authenticated organization ID. This creates a
+tenant boundary that does not trust endpoint telemetry labels.
+
+The reference registry uses SQLite WAL for one durable control-plane instance. The token contract
+and gateway enforcement are persistence-backend independent.
 
 ### Central collector
 
@@ -136,4 +153,4 @@ This separation keeps human authentication, application query authorization, and
 
 M0-M4 are complete in the reference stack. M5 now includes Azure IaC, Container Apps gateway/collector/viewer, separate managed identities, Key Vault, Azure Monitor, optional ADX ingestion, optional sanitized Blob archive, ADX-backed viewer queries, Microsoft Entra protection, VNet integration, Private DNS, Private Endpoints, and public-network shutdown for sensitive PaaS dependencies when private mode is selected.
 
-The remaining M5 item is live subscription validation of deployment, DNS, Entra callback behavior, managed-identity access, and end-to-end sanitized telemetry flow. M6 then adds inbound mTLS rotation, admission controls, audit policy, SBOM/scanning, and failure/load testing.
+The remaining M5 item is live subscription validation of deployment, DNS, Entra callback behavior, managed-identity access, and end-to-end sanitized telemetry flow. M6 security/reliability work is complete. M7 now includes vendor adapters, organization policy controls, and the reference multi-tenant control plane.
