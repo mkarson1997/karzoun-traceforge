@@ -38,6 +38,8 @@ traceforge-kusto-viewer = "traceforge.kusto.viewer_server:main"
 traceforge-benchmark = "traceforge.benchmark:main"
 traceforge-adapter = "traceforge.adapters:main"
 traceforge-policy = "traceforge.policy:main"
+traceforge-tenants = "traceforge.control_plane:tenants_main"
+traceforge-control-plane = "traceforge.control_plane:server_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/traceforge"]
