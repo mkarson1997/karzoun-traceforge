@@ -35,9 +35,9 @@ Stored span fields include:
 - sanitized events and links
 - ingestion timestamp
 
-SQLite runs in WAL mode for practical concurrent read/write behavior during the local demo.
+SQLite runs in WAL mode for practical concurrent read/write behavior during the local demo. Tenant-aware stores use `(organization_id, trace_id, span_id)` as the span identity so two organizations cannot overwrite one another by reusing OTLP trace/span IDs.
 
-A second `privacy_exports` table stores only non-sensitive counters produced by the privacy gateway:
+A second `privacy_exports` table stores only non-sensitive counters produced by the privacy gateway. Its identity is `(organization_id, export_id)`:
 
 - export identifier
 - findings count
