@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4 and M6-M8 are implemented. The remaining production gate is M5 live Azure subscription validation of networking, identity, ingestion, and rollback behavior.
+> Status: engineering preview. M0-M4 and M6-M9 are implemented. The remaining production gate is M5 live Azure subscription validation of networking, identity, ingestion, and rollback behavior.
 
 ## Why TraceForge
 
@@ -34,7 +34,7 @@ Central OpenTelemetry Collector
 
 The local profile uses SQLite WAL behind the same read-only viewer contract. The hardened Azure profile can place Container Apps inside a dedicated VNet and route Key Vault, ADLS, and ADX through Azure Private Link.
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/adapters.md](docs/adapters.md), [docs/policies.md](docs/policies.md), [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/azure-deployment.md](docs/azure-deployment.md), [docs/deployment-guide.md](docs/deployment-guide.md), [docs/commercial-packaging.md](docs/commercial-packaging.md), and [docs/roadmap.md](docs/roadmap.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/adapters.md](docs/adapters.md), [docs/policies.md](docs/policies.md), [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/azure-deployment.md](docs/azure-deployment.md), [docs/deployment-guide.md](docs/deployment-guide.md), [docs/commercial-packaging.md](docs/commercial-packaging.md), [docs/operations.md](docs/operations.md), and [docs/roadmap.md](docs/roadmap.md).
 
 ## Implemented
 
@@ -328,7 +328,7 @@ The protected viewer is deployed only when ADX is enabled and both `viewerImage`
 
 M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
 
-M6 security and reliability hardening, M7 productization, and M8 tenant query isolation are complete in the reference implementation. The remaining production gate is M5 live Azure validation.
+M6 security and reliability hardening, M7 productization, M8 tenant query isolation, and M9 operational readiness are complete in the reference implementation. The remaining production gate is M5 live Azure validation.
 
 ## Commercial status
 
