@@ -74,8 +74,10 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 - Adapter-side privacy scrubbing before OTLP serialization
 - Bounded metadata capture that excludes prompts, commands, tool payloads, and assistant text
 - TLS/mTLS export support through the traceforge-adapter CLI
+- Built-in minimal, strict, and standard organization policy profiles
+- Per-organization adapter allowlists, capture controls, and batch limits
 
-See [docs/adapters.md](docs/adapters.md) for usage and the generic event contract.
+See [docs/adapters.md](docs/adapters.md) for usage and the generic event contract, and [docs/policies.md](docs/policies.md) for organization policy controls.
 
 ### Azure production profile
 
@@ -276,7 +278,7 @@ The protected viewer is deployed only when ADX is enabled and both `viewerImage`
 
 M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
 
-M6 security and reliability hardening is complete, including inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 productization is underway: coding-agent adapters are complete, with organization policy, multi-tenancy, and commercial deployment workflows next.
+M6 security and reliability hardening is complete, including inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 productization is underway: coding-agent adapters plus organization policy controls are complete, with multi-tenancy and commercial deployment workflows next.
 
 ## Commercial status
 
