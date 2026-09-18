@@ -13,6 +13,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import (
 
 from traceforge.gateway.server import PrivacyGateway
 from traceforge.privacy import Scrubber
+from traceforge.tenant_auth import TenantTokenSigner
 
 
 class CaptureService(TraceServiceServicer):
@@ -40,9 +41,13 @@ class BlockingUpstreamStub:
 class ImmediateUpstreamStub:
     def __init__(self) -> None:
         self.calls = 0
+        self.last_request = None
 
     async def Export(self, request, timeout=None):  # noqa: N802, ARG002
         self.calls += 1
+        captured = ExportTraceServiceRequest()
+        captured.CopyFrom(request)
+        self.last_request = captured
         return ExportTraceServiceResponse()
 
 
@@ -82,6 +87,10 @@ def test_gateway_enforces_forwarded_client_certificate_allowlist() -> None:
 
 def test_gateway_rate_limits_each_authenticated_certificate_independently() -> None:
     asyncio.run(_exercise_per_client_rate_limit())
+
+
+def test_gateway_enforces_signed_tenant_identity_and_overwrites_spoofed_org() -> None:
+    asyncio.run(_exercise_tenant_authorization())
 
 
 async def _exercise_gateway() -> None:
@@ -240,3 +249,59 @@ async def _exercise_per_client_rate_limit() -> None:
     assert metrics["rate_limit_rejections_total"] == 1
     assert metrics["rate_limit_tracked_clients"] == 2
     assert "traceforge_gateway_rate_limit_rejections_total 1" in servicer.render_metrics()
+
+
+async def _exercise_tenant_authorization() -> None:
+    signer = TenantTokenSigner(b"t" * 32)
+    upstream = ImmediateUpstreamStub()
+    servicer = PrivacyGateway(
+        scrubber=Scrubber(),
+        upstream_stub=upstream,  # type: ignore[arg-type]
+        export_timeout_seconds=5,
+        tenant_token_signer=signer,
+        tenant_auth_required=True,
+    )
+    request = ExportTraceServiceRequest()
+    resource = request.resource_spans.add().resource
+    spoofed = resource.attributes.add()
+    spoofed.key = "traceforge.organization.id"
+    spoofed.value.string_value = "org_spoofed"
+    resource_spans = request.resource_spans[0]
+    resource_spans.scope_spans.add().spans.add().name = "tenant export"
+
+    try:
+        await servicer.Export(request, FakeContext())
+    except AbortCalled as exc:
+        assert exc.code == grpc.StatusCode.UNAUTHENTICATED
+    else:
+        raise AssertionError("missing tenant token should have been rejected")
+
+    try:
+        await servicer.Export(
+            request,
+            FakeContext([("authorization", "Bearer invalid-token")]),
+        )
+    except AbortCalled as exc:
+        assert exc.code == grpc.StatusCode.UNAUTHENTICATED
+    else:
+        raise AssertionError("invalid tenant token should have been rejected")
+
+    token = signer.issue("org_authenticated", {"ingest"})
+    await servicer.Export(
+        request,
+        FakeContext([("authorization", f"Bearer {token}")]),
+    )
+
+    assert upstream.calls == 1
+    assert upstream.last_request is not None
+    forwarded_resource = upstream.last_request.resource_spans[0].resource
+    organizations = [
+        item.value.string_value
+        for item in forwarded_resource.attributes
+        if item.key == "traceforge.organization.id"
+    ]
+    assert organizations == ["org_authenticated"]
+
+    metrics = servicer.metrics_snapshot()
+    assert metrics["tenant_auth_rejections_total"] == 2
+    assert "traceforge_gateway_tenant_auth_rejections_total 2" in servicer.render_metrics()
