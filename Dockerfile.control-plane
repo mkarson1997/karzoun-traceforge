@@ -1,0 +1,23 @@
+FROM python:3.13-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    TRACEFORGE_TENANT_DB=/data/traceforge-tenants.db \
+    TRACEFORGE_CONTROL_HTTP_ADDRESS=0.0.0.0:8090
+
+WORKDIR /app
+
+RUN addgroup --system traceforge \
+    && adduser --system --ingroup traceforge traceforge \
+    && mkdir -p /data \
+    && chown traceforge:traceforge /data
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN python -m pip install --upgrade pip && python -m pip install .
+
+USER traceforge
+VOLUME ["/data"]
+EXPOSE 8090
+CMD ["traceforge-control-plane"]
