@@ -264,6 +264,32 @@ This prevents the public viewer ingress from being created accidentally without 
 
 The viewer Container App receives its own user-assigned managed identity. That identity gets the database-level ADX `Viewer` role and no ingestion role. The application authenticates to ADX using that managed identity through `AZURE_CLIENT_ID`.
 
+## Tenant-scoped production viewer
+
+When one ADX database contains telemetry from multiple organizations, set `viewerOrganizationId`
+for a customer-specific viewer deployment:
+
+```bash
+az deployment group create \
+  --resource-group <resource-group> \
+  --template-file deploy/azure/main.bicep \
+  --parameters \
+      gatewayImage=<registry>/traceforge:0.1.0 \
+      collectorImage=<registry>/traceforge-collector:0.1.0 \
+      viewerImage=<registry>/traceforge-viewer:0.1.0 \
+      deployKusto=true \
+      entraClientId=<application-client-id> \
+      viewerOrganizationId=org_acme
+```
+
+The viewer passes the organization ID as a Kusto query parameter on every stats, session, trace,
+search, privacy, and export query. The organization value is not interpolated into KQL.
+
+This is application-level query isolation behind Entra authentication. If a commercial shared SaaS
+requires database-enforced tenant isolation even after a viewer application compromise, add a
+data-plane isolation mechanism such as a dedicated database/cluster boundary or an independently
+validated ADX row-isolation design before making that stronger claim.
+
 ## Microsoft Entra setup for the viewer
 
 Create a Microsoft Entra application registration for the browser viewer and record its Application (client) ID. The deployment uses Container Apps built-in authentication with the Entra provider, `RedirectToLoginPage`, HTTPS-only auth responses, and the configured client ID as the allowed audience.
@@ -350,7 +376,7 @@ az deployment group create \
 
 The gateway and Entra-protected viewer still have deliberate external Container Apps ingress because they are the product's public entry surfaces. The collector remains internal-only.
 
-The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, `privateEndpointsEnabled`, `gatewayMutualTlsEnabled`, and `gatewayTenantAuthEnabled` so operators can verify the selected topology and OTLP client-certificate mode after deployment.
+The deployment returns `virtualNetworkId`, `infrastructureSubnetId`, `privateEndpointSubnetId`, `privateEndpointsEnabled`, `gatewayMutualTlsEnabled`, `gatewayTenantAuthEnabled`, and `viewerOrganizationId` so operators can verify the selected topology and OTLP client-certificate mode after deployment.
 
 ## ADX schema
 
@@ -448,6 +474,7 @@ M5 is not marked fully production-validated until a real subscription deployment
 - private DNS resolution from the Container Apps environment
 - Key Vault, Storage, and ADX connectivity with public access disabled
 - viewer Entra sign-in and callback configuration
+- organization-scoped viewer queries when shared ADX contains multiple organizations
 - OTLP client-certificate handshake and thumbprint authorization
 - signed tenant-token issuance, rejection paths, and authenticated organization overwrite
 - end-to-end sanitized OTLP ingestion and ADX query behavior
