@@ -111,7 +111,7 @@ OTELTraces
 | extend attributes_rewritten=tolong(ResourceAttributes["traceforge.privacy.attributes_rewritten"])
 """
             + org_filter
-            + """
+            + f"""
 | where isnotempty(export_id)
 | summarize
     findings=max(findings),
@@ -391,7 +391,7 @@ OTELTraces
         )
         rows = self._execute(
             org_declaration
-            + f"""
+            + """
 OTELTraces
 | extend organization_id=tostring(ResourceAttributes["traceforge.organization.id"])
 | extend export_id=tostring(ResourceAttributes["traceforge.privacy.export_id"])
