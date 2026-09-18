@@ -32,3 +32,5 @@ jobs:
         run: docker build -f Dockerfile.collector -t traceforge-collector:ci .
       - name: Build ADX viewer image
         run: docker build -f Dockerfile.viewer -t traceforge-viewer:ci .
+      - name: Build control plane image
+        run: docker build -f Dockerfile.control-plane -t traceforge-control-plane:ci .
