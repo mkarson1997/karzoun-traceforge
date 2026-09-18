@@ -11,6 +11,7 @@ from traceforge.control_plane import (
     _ControlPlaneServer,
     _http_json,
     fetch_control_plane_session,
+    fetch_control_plane_viewer_token,
 )
 from traceforge.policy import builtin_policy
 from traceforge.tenant_auth import TenantTokenSigner
@@ -75,6 +76,45 @@ def test_control_plane_delivers_policy_and_short_lived_ingest_token(tmp_path):
     claims = signer.verify(session.ingest_token, required_scope="ingest")
     assert claims.organization_id == "org_demo"
 
+
+def test_control_plane_issues_viewer_token_only_with_viewer_scope(tmp_path):
+    registry = TenantRegistry(tmp_path / "tenants.db")
+    registry.create_organization("Demo", organization_id="org_demo")
+    _, viewer_key = registry.issue_api_key(
+        "org_demo",
+        scopes=frozenset({"viewer:read"}),
+    )
+    _, ingest_key = registry.issue_api_key(
+        "org_demo",
+        scopes=frozenset({"ingest"}),
+    )
+    signer = TenantTokenSigner(b"s" * 32)
+    server = _ControlPlaneServer(("127.0.0.1", 0), registry, signer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        host, port = server.server_address
+        base = f"http://{host}:{port}"
+        organization_id, token = fetch_control_plane_viewer_token(
+            base,
+            viewer_key,
+            timeout_seconds=2,
+        )
+        with pytest.raises(PermissionError, match="HTTP 401"):
+            fetch_control_plane_viewer_token(
+                base,
+                ingest_key,
+                timeout_seconds=2,
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert organization_id == "org_demo"
+    claims = signer.verify(token, required_scope="viewer:read")
+    assert claims.organization_id == "org_demo"
 
 
 class _RedirectHandler(BaseHTTPRequestHandler):
