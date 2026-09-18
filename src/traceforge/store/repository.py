@@ -11,12 +11,15 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 )
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue
 
-_SCHEMA = """
+_LEGACY_ORGANIZATION_ID = "org_legacy"
+
+_TABLE_SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS spans (
+    organization_id TEXT NOT NULL,
     trace_id TEXT NOT NULL,
     span_id TEXT NOT NULL,
     parent_span_id TEXT,
@@ -36,34 +39,38 @@ CREATE TABLE IF NOT EXISTS spans (
     events_json TEXT NOT NULL,
     links_json TEXT NOT NULL,
     ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (trace_id, span_id)
+    PRIMARY KEY (organization_id, trace_id, span_id)
 );
 
 CREATE TABLE IF NOT EXISTS privacy_exports (
-    export_id TEXT PRIMARY KEY,
+    organization_id TEXT NOT NULL,
+    export_id TEXT NOT NULL,
     findings INTEGER NOT NULL,
     attributes_removed INTEGER NOT NULL,
     attributes_rewritten INTEGER NOT NULL,
     spans_seen INTEGER NOT NULL,
     events_seen INTEGER NOT NULL,
     links_seen INTEGER NOT NULL,
-    ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (organization_id, export_id)
 );
+"""
 
-CREATE INDEX IF NOT EXISTS idx_spans_session_start
-ON spans(session_id, start_ns DESC);
+_INDEX_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_spans_org_session_start
+ON spans(organization_id, session_id, start_ns DESC);
 
-CREATE INDEX IF NOT EXISTS idx_spans_task_start
-ON spans(task_id, start_ns DESC);
+CREATE INDEX IF NOT EXISTS idx_spans_org_task_start
+ON spans(organization_id, task_id, start_ns DESC);
 
-CREATE INDEX IF NOT EXISTS idx_spans_trace_start
-ON spans(trace_id, start_ns ASC);
+CREATE INDEX IF NOT EXISTS idx_spans_org_trace_start
+ON spans(organization_id, trace_id, start_ns ASC);
 
-CREATE INDEX IF NOT EXISTS idx_spans_service_start
-ON spans(service_name, start_ns DESC);
+CREATE INDEX IF NOT EXISTS idx_spans_org_service_start
+ON spans(organization_id, service_name, start_ns DESC);
 
-CREATE INDEX IF NOT EXISTS idx_spans_agent_start
-ON spans(agent_name, start_ns DESC);
+CREATE INDEX IF NOT EXISTS idx_spans_org_agent_start
+ON spans(organization_id, agent_name, start_ns DESC);
 """
 
 
@@ -72,7 +79,9 @@ class TraceRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(_SCHEMA)
+            connection.executescript(_TABLE_SCHEMA)
+            _migrate_tenant_schema(connection)
+            connection.executescript(_INDEX_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -84,7 +93,11 @@ class TraceRepository:
         privacy_rows: list[tuple[Any, ...]] = []
         for resource_spans in request.resource_spans:
             resource = _key_values(resource_spans.resource.attributes)
-            privacy_summary = _privacy_summary(resource)
+            organization_id = (
+                _as_text(resource.get("traceforge.organization.id"))
+                or _LEGACY_ORGANIZATION_ID
+            )
+            privacy_summary = _privacy_summary(resource, organization_id)
             if privacy_summary is not None:
                 privacy_rows.append(privacy_summary)
 
@@ -132,6 +145,7 @@ class TraceRepository:
                     end_ns = int(span.end_time_unix_nano)
                     rows.append(
                         (
+                            organization_id,
                             span.trace_id.hex(),
                             span.span_id.hex(),
                             span.parent_span_id.hex() or None,
@@ -158,12 +172,12 @@ class TraceRepository:
 
         span_statement = """
         INSERT INTO spans (
-            trace_id, span_id, parent_span_id, name, kind, start_ns, end_ns,
-            duration_ns, status_code, status_message, task_id, session_id,
-            agent_name, service_name, resource_json, attributes_json,
+            organization_id, trace_id, span_id, parent_span_id, name, kind,
+            start_ns, end_ns, duration_ns, status_code, status_message, task_id,
+            session_id, agent_name, service_name, resource_json, attributes_json,
             events_json, links_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(trace_id, span_id) DO UPDATE SET
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id, trace_id, span_id) DO UPDATE SET
             parent_span_id=excluded.parent_span_id,
             name=excluded.name,
             kind=excluded.kind,
@@ -184,10 +198,10 @@ class TraceRepository:
         """
         privacy_statement = """
         INSERT INTO privacy_exports (
-            export_id, findings, attributes_removed, attributes_rewritten,
-            spans_seen, events_seen, links_seen
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(export_id) DO UPDATE SET
+            organization_id, export_id, findings, attributes_removed,
+            attributes_rewritten, spans_seen, events_seen, links_seen
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(organization_id, export_id) DO UPDATE SET
             findings=excluded.findings,
             attributes_removed=excluded.attributes_removed,
             attributes_rewritten=excluded.attributes_rewritten,
@@ -203,31 +217,47 @@ class TraceRepository:
                 connection.executemany(privacy_statement, privacy_rows)
         return len(rows)
 
-    def stats(self) -> dict[str, int | str | None]:
-        query = """
+    def stats(
+        self,
+        *,
+        organization_id: str | None = None,
+    ) -> dict[str, int | str | None]:
+        span_where, span_params = _organization_where(organization_id)
+        span_query = f"""
         SELECT
             COUNT(*) AS spans,
             COUNT(DISTINCT trace_id) AS traces,
             COUNT(DISTINCT NULLIF(session_id, '')) AS sessions,
             COUNT(DISTINCT NULLIF(task_id, '')) AS tasks,
-            MAX(ingested_at) AS last_ingested_at,
-            (SELECT COUNT(*) FROM privacy_exports) AS privacy_exports,
-            COALESCE((SELECT SUM(findings) FROM privacy_exports), 0) AS privacy_findings,
-            COALESCE(
-                (SELECT SUM(attributes_removed) FROM privacy_exports), 0
-            ) AS privacy_attributes_removed,
-            COALESCE(
-                (SELECT SUM(attributes_rewritten) FROM privacy_exports), 0
-            ) AS privacy_attributes_rewritten
+            MAX(ingested_at) AS last_ingested_at
         FROM spans
+        {span_where}
+        """
+        privacy_where, privacy_params = _organization_where(organization_id)
+        privacy_query = f"""
+        SELECT
+            COUNT(*) AS privacy_exports,
+            COALESCE(SUM(findings), 0) AS privacy_findings,
+            COALESCE(SUM(attributes_removed), 0) AS privacy_attributes_removed,
+            COALESCE(SUM(attributes_rewritten), 0) AS privacy_attributes_rewritten
+        FROM privacy_exports
+        {privacy_where}
         """
         with self._connect() as connection:
-            row = connection.execute(query).fetchone()
-        assert row is not None
-        return dict(row)
+            span_row = connection.execute(span_query, span_params).fetchone()
+            privacy_row = connection.execute(privacy_query, privacy_params).fetchone()
+        assert span_row is not None
+        assert privacy_row is not None
+        return {**dict(span_row), **dict(privacy_row)}
 
-    def list_sessions(self, limit: int = 50) -> list[dict[str, Any]]:
-        query = """
+    def list_sessions(
+        self,
+        limit: int = 50,
+        *,
+        organization_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where, params = _organization_where(organization_id)
+        query = f"""
         SELECT
             COALESCE(NULLIF(session_id, ''), 'unassigned') AS session_id,
             MAX(task_id) AS task_id,
@@ -238,21 +268,33 @@ class TraceRepository:
             COUNT(*) AS span_count,
             COUNT(DISTINCT trace_id) AS trace_count
         FROM spans
+        {where}
         GROUP BY COALESCE(NULLIF(session_id, ''), 'unassigned')
         ORDER BY MAX(end_ns) DESC
         LIMIT ?
         """
+        params.append(max(1, min(limit, 200)))
         with self._connect() as connection:
-            rows = connection.execute(query, (max(1, min(limit, 200)),)).fetchall()
+            rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
-    def list_traces_for_session(self, session_id: str) -> list[dict[str, Any]]:
+    def list_traces_for_session(
+        self,
+        session_id: str,
+        *,
+        organization_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if organization_id is not None:
+            clauses.append("organization_id = ?")
+            params.append(organization_id)
         if session_id == "unassigned":
-            condition = "session_id IS NULL OR session_id = ''"
-            params: tuple[Any, ...] = ()
+            clauses.append("(session_id IS NULL OR session_id = '')")
         else:
-            condition = "session_id = ?"
-            params = (session_id,)
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        where = "WHERE " + " AND ".join(clauses)
         query = f"""
         SELECT
             trace_id,
@@ -263,7 +305,7 @@ class TraceRepository:
             MAX(agent_name) AS agent_name,
             MAX(service_name) AS service_name
         FROM spans
-        WHERE {condition}
+        {where}
         GROUP BY trace_id
         ORDER BY MIN(start_ns) DESC
         """
@@ -271,15 +313,25 @@ class TraceRepository:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
-    def get_trace(self, trace_id: str) -> dict[str, Any] | None:
-        query = """
+    def get_trace(
+        self,
+        trace_id: str,
+        *,
+        organization_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        clauses = ["trace_id = ?"]
+        params: list[Any] = [trace_id.lower()]
+        if organization_id is not None:
+            clauses.append("organization_id = ?")
+            params.append(organization_id)
+        query = f"""
         SELECT *
         FROM spans
-        WHERE trace_id = ?
+        WHERE {" AND ".join(clauses)}
         ORDER BY start_ns ASC, span_id ASC
         """
         with self._connect() as connection:
-            rows = connection.execute(query, (trace_id.lower(),)).fetchall()
+            rows = connection.execute(query, params).fetchall()
         if not rows:
             return None
         spans = [_decode_span_row(row) for row in rows]
@@ -298,9 +350,13 @@ class TraceRepository:
         agent: str | None = None,
         status_code: int | None = None,
         limit: int = 100,
+        organization_id: str | None = None,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        if organization_id is not None:
+            clauses.append("organization_id = ?")
+            params.append(organization_id)
         query = query.strip()
         if query:
             pattern = f"%{_escape_like(query.lower())}%"
@@ -346,16 +402,24 @@ class TraceRepository:
             rows = connection.execute(sql, params).fetchall()
         return [_decode_span_row(row) for row in rows]
 
-    def list_privacy_exports(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_privacy_exports(
+        self,
+        limit: int = 50,
+        *,
+        organization_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        where, params = _organization_where(organization_id)
+        params.append(max(1, min(limit, 500)))
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM privacy_exports
+                {where}
                 ORDER BY ingested_at DESC
                 LIMIT ?
                 """,
-                (max(1, min(limit, 500)),),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -365,9 +429,13 @@ class TraceRepository:
         session_id: str | None = None,
         task_id: str | None = None,
         limit: int = 10_000,
+        organization_id: str | None = None,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
+        if organization_id is not None:
+            clauses.append("organization_id = ?")
+            params.append(organization_id)
         if session_id:
             clauses.append("session_id = ?")
             params.append(session_id)
@@ -388,11 +456,93 @@ class TraceRepository:
         return [_decode_span_row(row) for row in rows]
 
 
-def _privacy_summary(resource: dict[str, Any]) -> tuple[Any, ...] | None:
+def _migrate_tenant_schema(connection: sqlite3.Connection) -> None:
+    span_info = connection.execute("PRAGMA table_info(spans)").fetchall()
+    span_columns = {str(row["name"]) for row in span_info}
+    span_pk = [
+        str(row["name"])
+        for row in sorted(span_info, key=lambda row: int(row["pk"]))
+        if int(row["pk"]) > 0
+    ]
+    if "organization_id" not in span_columns or span_pk != [
+        "organization_id",
+        "trace_id",
+        "span_id",
+    ]:
+        connection.execute("ALTER TABLE spans RENAME TO spans_pre_tenant")
+        connection.executescript(_TABLE_SCHEMA.split("CREATE TABLE IF NOT EXISTS privacy_exports")[0])
+        connection.execute(
+            """
+            INSERT INTO spans (
+                organization_id, trace_id, span_id, parent_span_id, name, kind,
+                start_ns, end_ns, duration_ns, status_code, status_message, task_id,
+                session_id, agent_name, service_name, resource_json, attributes_json,
+                events_json, links_json, ingested_at
+            )
+            SELECT
+                ?, trace_id, span_id, parent_span_id, name, kind,
+                start_ns, end_ns, duration_ns, status_code, status_message, task_id,
+                session_id, agent_name, service_name, resource_json, attributes_json,
+                events_json, links_json, ingested_at
+            FROM spans_pre_tenant
+            """,
+            (_LEGACY_ORGANIZATION_ID,),
+        )
+        connection.execute("DROP TABLE spans_pre_tenant")
+
+    privacy_info = connection.execute("PRAGMA table_info(privacy_exports)").fetchall()
+    privacy_columns = {str(row["name"]) for row in privacy_info}
+    privacy_pk = [
+        str(row["name"])
+        for row in sorted(privacy_info, key=lambda row: int(row["pk"]))
+        if int(row["pk"]) > 0
+    ]
+    if "organization_id" not in privacy_columns or privacy_pk != [
+        "organization_id",
+        "export_id",
+    ]:
+        connection.execute("ALTER TABLE privacy_exports RENAME TO privacy_exports_pre_tenant")
+        connection.execute(
+            """
+            CREATE TABLE privacy_exports (
+                organization_id TEXT NOT NULL,
+                export_id TEXT NOT NULL,
+                findings INTEGER NOT NULL,
+                attributes_removed INTEGER NOT NULL,
+                attributes_rewritten INTEGER NOT NULL,
+                spans_seen INTEGER NOT NULL,
+                events_seen INTEGER NOT NULL,
+                links_seen INTEGER NOT NULL,
+                ingested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                PRIMARY KEY (organization_id, export_id)
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO privacy_exports (
+                organization_id, export_id, findings, attributes_removed,
+                attributes_rewritten, spans_seen, events_seen, links_seen, ingested_at
+            )
+            SELECT
+                ?, export_id, findings, attributes_removed,
+                attributes_rewritten, spans_seen, events_seen, links_seen, ingested_at
+            FROM privacy_exports_pre_tenant
+            """,
+            (_LEGACY_ORGANIZATION_ID,),
+        )
+        connection.execute("DROP TABLE privacy_exports_pre_tenant")
+
+
+def _privacy_summary(
+    resource: dict[str, Any],
+    organization_id: str,
+) -> tuple[Any, ...] | None:
     export_id = _as_text(resource.get("traceforge.privacy.export_id"))
     if not export_id:
         return None
     return (
+        organization_id,
         export_id,
         _as_int(resource.get("traceforge.privacy.findings")),
         _as_int(resource.get("traceforge.privacy.attributes_removed")),
@@ -448,6 +598,12 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _organization_where(organization_id: str | None) -> tuple[str, list[Any]]:
+    if organization_id is None:
+        return "", []
+    return "WHERE organization_id = ?", [organization_id]
 
 
 def _escape_like(value: str) -> str:
