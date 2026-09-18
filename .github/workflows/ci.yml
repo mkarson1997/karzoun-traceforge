@@ -38,3 +38,20 @@ jobs:
         env:
           TRACEFORGE_TENANT_SIGNING_KEY: package-validation-signing-key-000000000000
         run: docker compose -f deploy/compose/product.yml config --quiet
+
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build Python release artifacts
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+      - name: Verify package workflow is present
+        run: test -s .github/workflows/package.yml
