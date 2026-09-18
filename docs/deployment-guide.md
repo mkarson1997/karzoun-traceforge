@@ -127,6 +127,11 @@ Validate IaC before deployment:
 The remaining M5 gate is real-subscription validation of DNS, Entra callback behavior,
 managed-identity access, end-to-end sanitized ingestion, and rollback/redeployment behavior.
 
+After deployment, `traceforge-azure-validate` can read the deployment outputs, assert selected
+private-network/mTLS/tenant-auth/viewer controls, bootstrap a short-lived tenant token, and send a
+TLS synthetic OTLP request. See docs/azure-deployment.md for the complete command and the manual
+checks that still require access inside the Azure environment.
+
 The current M7 tenant control plane is packaged as a separate container. Its included SQLite
 registry is a single-instance reference persistence layer. Do not horizontally scale multiple
 control-plane replicas with independent local SQLite disks. For a multi-replica commercial Azure
