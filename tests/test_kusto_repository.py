@@ -136,3 +136,43 @@ def test_stats_deduplicate_privacy_exports_server_side():
     privacy_query = client.calls[1][1]
     assert "summarize" in privacy_query
     assert "by export_id" in privacy_query
+
+
+
+def test_tenant_scope_is_parameterized_and_applied_before_search():
+    client = _FakeClient([[]])
+    repository = _repo(client)
+
+    assert repository.search_spans(
+        "tool.shell",
+        organization_id="org_alpha",
+    ) == []
+
+    _, query, properties = client.calls[0]
+    assert "org_alpha" not in query
+    assert "| where organization_id == tf_org" in query
+    assert properties == {
+        "tf_query": "tool.shell",
+        "tf_service": "",
+        "tf_agent": "",
+        "tf_status": -1,
+        "tf_org": "org_alpha",
+    }
+
+
+def test_tenant_scope_is_applied_to_trace_lookup():
+    client = _FakeClient([[]])
+    repository = _repo(client)
+
+    assert repository.get_trace(
+        "aa" * 16,
+        organization_id="org_beta",
+    ) is None
+
+    _, query, properties = client.calls[0]
+    assert "org_beta" not in query
+    assert "| where organization_id == tf_org" in query
+    assert properties == {
+        "tf_trace": "aa" * 16,
+        "tf_org": "org_beta",
+    }
