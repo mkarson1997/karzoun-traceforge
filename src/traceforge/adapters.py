@@ -390,7 +390,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", default="-", help="JSONL/JSON path, or - for stdin")
     parser.add_argument("--endpoint", default="127.0.0.1:4317")
-    parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--batch-size", type=int)
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--insecure", action="store_true")
@@ -403,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if not 1 <= args.batch_size <= 1000:
+    if args.batch_size is not None and not 1 <= args.batch_size <= 1000:
         raise SystemExit("--batch-size must be between 1 and 1000")
     if bool(args.client_cert_file) != bool(args.client_key_file):
         raise SystemExit(
@@ -418,7 +418,7 @@ def main() -> int:
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"traceforge-adapter: policy error: {exc}", file=sys.stderr)
             return 2
-        if args.batch_size > policy.max_batch_size:
+        if args.batch_size is not None and args.batch_size > policy.max_batch_size:
             print(
                 "traceforge-adapter: --batch-size exceeds organization policy limit "
                 f"({policy.max_batch_size})",
@@ -426,6 +426,7 @@ def main() -> int:
             )
             return 2
 
+    batch_size = args.batch_size or (policy.max_batch_size if policy is not None else 100)
     adapter = create_adapter(args.adapter)
     normalized = 0
     batches = 0
@@ -450,7 +451,7 @@ def main() -> int:
                 continue
             normalized += 1
             buffer.append(event)
-            if len(buffer) >= args.batch_size:
+            if len(buffer) >= batch_size:
                 _flush(buffer, stub, args.timeout_seconds, policy)
                 batches += 1
                 buffer.clear()
