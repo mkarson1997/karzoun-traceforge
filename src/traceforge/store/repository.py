@@ -19,7 +19,7 @@ PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS spans (
-    organization_id TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_legacy',
     trace_id TEXT NOT NULL,
     span_id TEXT NOT NULL,
     parent_span_id TEXT,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS spans (
 );
 
 CREATE TABLE IF NOT EXISTS privacy_exports (
-    organization_id TEXT NOT NULL,
+    organization_id TEXT NOT NULL DEFAULT 'org_legacy',
     export_id TEXT NOT NULL,
     findings INTEGER NOT NULL,
     attributes_removed INTEGER NOT NULL,
@@ -505,7 +505,7 @@ def _migrate_tenant_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             CREATE TABLE privacy_exports (
-                organization_id TEXT NOT NULL,
+                organization_id TEXT NOT NULL DEFAULT 'org_legacy',
                 export_id TEXT NOT NULL,
                 findings INTEGER NOT NULL,
                 attributes_removed INTEGER NOT NULL,
