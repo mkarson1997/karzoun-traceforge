@@ -1,0 +1,85 @@
+name: traceforge-product
+
+services:
+  tenant-control-plane:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.control-plane
+    environment:
+      TRACEFORGE_TENANT_SIGNING_KEY: ${TRACEFORGE_TENANT_SIGNING_KEY:?set TRACEFORGE_TENANT_SIGNING_KEY}
+      TRACEFORGE_TENANT_DB: /data/traceforge-tenants.db
+      TRACEFORGE_CONTROL_HTTP_ADDRESS: 0.0.0.0:8090
+    volumes:
+      - traceforge-tenant-data:/data
+    ports:
+      - "127.0.0.1:${TRACEFORGE_CONTROL_PORT:-8090}:8090"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+
+  trace-store:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["traceforge-store"]
+    environment:
+      TRACEFORGE_STORE_DB: /var/lib/traceforge/traceforge.db
+      TRACEFORGE_STORE_OTLP_ADDRESS: 0.0.0.0:4320
+      TRACEFORGE_STORE_HTTP_ADDRESS: 0.0.0.0:8081
+      TRACEFORGE_STORE_RETENTION_DAYS: "${TRACEFORGE_STORE_RETENTION_DAYS:-30}"
+    volumes:
+      - traceforge-trace-data:/var/lib/traceforge
+    expose:
+      - "4320"
+    ports:
+      - "127.0.0.1:${TRACEFORGE_VIEWER_PORT:-8081}:8081"
+    restart: unless-stopped
+
+  central-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ../otel/central-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    depends_on:
+      - trace-store
+    expose:
+      - "4319"
+    restart: unless-stopped
+
+  privacy-gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["traceforge-gateway"]
+    environment:
+      TRACEFORGE_UPSTREAM_OTLP_ENDPOINT: central-collector:4319
+      TRACEFORGE_UPSTREAM_INSECURE: "true"
+      TRACEFORGE_REDACTION_MODE: redact
+      TRACEFORGE_REDACT_PII: "true"
+      TRACEFORGE_DETECT_HIGH_ENTROPY: "true"
+      TRACEFORGE_MAX_INFLIGHT_EXPORTS: "${TRACEFORGE_MAX_INFLIGHT_EXPORTS:-64}"
+      TRACEFORGE_ADMISSION_TIMEOUT_SECONDS: "${TRACEFORGE_ADMISSION_TIMEOUT_SECONDS:-0.25}"
+      TRACEFORGE_CLIENT_RATE_LIMIT_PER_MINUTE: "${TRACEFORGE_CLIENT_RATE_LIMIT_PER_MINUTE:-600}"
+      TRACEFORGE_TENANT_SIGNING_KEY: ${TRACEFORGE_TENANT_SIGNING_KEY:?set TRACEFORGE_TENANT_SIGNING_KEY}
+      TRACEFORGE_TENANT_AUTH_REQUIRED: "true"
+    depends_on:
+      - central-collector
+      - tenant-control-plane
+    ports:
+      - "${TRACEFORGE_OTLP_PORT:-4317}:4317"
+      - "127.0.0.1:${TRACEFORGE_HEALTH_PORT:-8080}:8080"
+    restart: unless-stopped
+
+volumes:
+  traceforge-tenant-data:
+  traceforge-trace-data:
