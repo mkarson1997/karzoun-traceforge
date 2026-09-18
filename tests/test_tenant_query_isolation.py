@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -126,3 +127,95 @@ def _get_json(base: str, path: str, token: str):
         timeout=2,
     ) as response:
         return json.loads(response.read().decode())
+
+
+
+def test_pre_tenant_schema_migration_preserves_resource_organization(tmp_path):
+    database = tmp_path / "legacy.db"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE spans (
+            trace_id TEXT NOT NULL,
+            span_id TEXT NOT NULL,
+            parent_span_id TEXT,
+            name TEXT NOT NULL,
+            kind INTEGER NOT NULL,
+            start_ns INTEGER NOT NULL,
+            end_ns INTEGER NOT NULL,
+            duration_ns INTEGER NOT NULL,
+            status_code INTEGER NOT NULL,
+            status_message TEXT NOT NULL,
+            task_id TEXT,
+            session_id TEXT,
+            agent_name TEXT,
+            service_name TEXT,
+            resource_json TEXT NOT NULL,
+            attributes_json TEXT NOT NULL,
+            events_json TEXT NOT NULL,
+            links_json TEXT NOT NULL,
+            ingested_at TEXT NOT NULL,
+            PRIMARY KEY (trace_id, span_id)
+        );
+        CREATE TABLE privacy_exports (
+            export_id TEXT PRIMARY KEY,
+            findings INTEGER NOT NULL,
+            attributes_removed INTEGER NOT NULL,
+            attributes_rewritten INTEGER NOT NULL,
+            spans_seen INTEGER NOT NULL,
+            events_seen INTEGER NOT NULL,
+            links_seen INTEGER NOT NULL,
+            ingested_at TEXT NOT NULL
+        );
+        """
+    )
+    resource = json.dumps(
+        {
+            "traceforge.organization.id": "org_existing",
+            "traceforge.privacy.export_id": "export-existing",
+        }
+    )
+    connection.execute(
+        """
+        INSERT INTO spans (
+            trace_id, span_id, parent_span_id, name, kind, start_ns, end_ns,
+            duration_ns, status_code, status_message, task_id, session_id,
+            agent_name, service_name, resource_json, attributes_json,
+            events_json, links_json, ingested_at
+        ) VALUES (?, ?, NULL, ?, 1, 1, 2, 1, 1, '', ?, ?, ?, ?, ?, '{}', '[]', '[]', ?)
+        """,
+        (
+            "aa" * 16,
+            "bb" * 8,
+            "legacy.span",
+            "task-legacy",
+            "session-legacy",
+            "codex",
+            "traceforge",
+            resource,
+            "2026-09-18T12:00:00Z",
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO privacy_exports (
+            export_id, findings, attributes_removed, attributes_rewritten,
+            spans_seen, events_seen, links_seen, ingested_at
+        ) VALUES ('export-existing', 2, 1, 1, 1, 0, 0, '2026-09-18T12:00:00Z')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    repository = TraceRepository(database)
+
+    assert repository.stats(organization_id="org_existing")["spans"] == 1
+    assert repository.stats(organization_id="org_existing")["privacy_exports"] == 1
+    assert repository.get_trace(
+        "aa" * 16,
+        organization_id="org_existing",
+    ) is not None
+    assert repository.get_trace(
+        "aa" * 16,
+        organization_id="org_legacy",
+    ) is None
