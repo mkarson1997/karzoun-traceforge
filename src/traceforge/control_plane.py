@@ -345,21 +345,27 @@ class _ControlPlaneHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/ingest-token":
+        token_specs = {
+            "/v1/ingest-token": ("ingest", "tenant.ingest_token.issue"),
+            "/v1/viewer-token": ("viewer:read", "tenant.viewer_token.issue"),
+        }
+        spec = token_specs.get(self.path)
+        if spec is None:
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
             return
+        scope, audit_event = spec
         try:
-            principal = self._principal("ingest")
+            principal = self._principal(scope)
         except PermissionError as exc:
             self._json(HTTPStatus.UNAUTHORIZED, {"error": str(exc)})
             return
         token = self.server.signer.issue(
             principal.organization_id,
-            {"ingest"},
+            {scope},
             ttl_seconds=900,
         )
         emit_audit_event(
-            "tenant.ingest_token.issue",
+            audit_event,
             "success",
             component="control-plane",
             actor_ref=stable_ref(principal.organization_id),
@@ -371,6 +377,7 @@ class _ControlPlaneHandler(BaseHTTPRequestHandler):
                 "organization_id": principal.organization_id,
                 "access_token": token,
                 "token_type": "Bearer",
+                "scope": scope,
                 "expires_in": 900,
             },
         )
@@ -428,6 +435,31 @@ def fetch_control_plane_session(
     if token_payload.get("organization_id") != policy.organization_id:
         raise ValueError("control plane returned inconsistent organization identity")
     return ControlPlaneSession(policy=policy, ingest_token=token)
+
+
+def fetch_control_plane_viewer_token(
+    base_url: str,
+    api_key: str,
+    *,
+    timeout_seconds: float = 10.0,
+) -> tuple[str, str]:
+    root = base_url.rstrip("/")
+    payload = _http_json(
+        Request(
+            f"{root}/v1/viewer-token",
+            headers={"Authorization": f"Bearer {api_key}"},
+            data=b"{}",
+            method="POST",
+        ),
+        timeout_seconds,
+    )
+    organization_id = payload.get("organization_id")
+    token = payload.get("access_token")
+    if not isinstance(organization_id, str) or not organization_id:
+        raise ValueError("control plane returned no organization identity")
+    if not isinstance(token, str) or not token:
+        raise ValueError("control plane returned no viewer token")
+    return organization_id, token
 
 
 def tenants_main() -> int:
