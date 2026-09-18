@@ -54,3 +54,12 @@ the existing privacy scrubber before an OTLP request is constructed.
 Each adapter span carries traceforge.agent.name plus available session/task IDs. Trace IDs are
 deterministic within the adapter, session, and task tuple so events for the same task correlate
 naturally in the existing TraceForge viewer without persisting raw prompts or tool payloads.
+
+## Organization policy
+
+Pass --policy-file to enforce an organization policy profile before any OTLP batch is exported.
+
+    traceforge-adapter codex --policy-file ./traceforge-policy.json       --endpoint 127.0.0.1:4317 --insecure
+
+The policy can restrict adapters, cap batch size, and suppress model names, tool names, or usage
+metadata. See docs/policies.md for the full contract.
