@@ -41,6 +41,7 @@ In the hardened Azure profile, the Container Apps environment is attached to a d
 - **Stable correlation without plaintext**: optional HMAC tokenization allows equality correlation while hiding the original value.
 - **Least privilege**: ingestion identities cannot query by default; viewer identities receive query-only database permissions and do not mutate ingestion policy.
 - **Authenticated tenancy over claimed tenancy**: the gateway verifies a signed tenant token and overwrites any organization ID supplied by an endpoint before centralized persistence.
+- **Tenant scope survives ingestion**: local storage identities include the organization ID and viewer repositories constrain every query/export to the authenticated or configured organization scope.
 - **Private PaaS dependencies**: production mode can remove public data-plane reachability for Key Vault, ADLS, and ADX while keeping only the intended gateway/viewer application surfaces exposed.
 - **Portable core, Azure production profile**: the privacy core and OTLP pipeline remain portable, while the reference production deployment targets Azure Container Apps, Azure Monitor, ADX/Kusto, Blob/ADLS, Key Vault, Entra ID, VNet integration, and Azure Private Link.
 
@@ -130,6 +131,22 @@ tenant boundary that does not trust endpoint telemetry labels.
 The reference registry uses SQLite WAL for one durable control-plane instance. The token contract
 and gateway enforcement are persistence-backend independent.
 
+### Tenant query isolation
+
+M8 carries authenticated organization identity into the query plane.
+
+The local SQLite reference store uses `(organization_id, trace_id, span_id)` as its primary span
+identity and `(organization_id, export_id)` for privacy summaries. This prevents cross-organization
+overwrite when two tenants intentionally reuse identical OTLP identifiers.
+
+The local viewer can require short-lived `viewer:read` tokens. The token organization is applied to
+stats, sessions, trace lookup, search, privacy counters, and sanitized dataset exports before the
+repository returns rows.
+
+The Kusto viewer uses the same logical boundary with parameterized organization filters. Azure
+customer-specific viewers can set a fixed `viewerOrganizationId` while Microsoft Entra continues to
+protect browser access at the Container Apps edge.
+
 ### Central collector
 
 A second OTel Collector performs batching, retry, routing, and export. In Azure it runs as an internal-only Container App and exports only data that has already crossed the privacy boundary.
@@ -153,4 +170,4 @@ This separation keeps human authentication, application query authorization, and
 
 M0-M4 are complete in the reference stack. M5 now includes Azure IaC, Container Apps gateway/collector/viewer, separate managed identities, Key Vault, Azure Monitor, optional ADX ingestion, optional sanitized Blob archive, ADX-backed viewer queries, Microsoft Entra protection, VNet integration, Private DNS, Private Endpoints, and public-network shutdown for sensitive PaaS dependencies when private mode is selected.
 
-The remaining M5 item is live subscription validation of deployment, DNS, Entra callback behavior, managed-identity access, end-to-end sanitized telemetry flow, and rollback/redeployment behavior. M6 security/reliability work is complete. M7 reference productization is complete with vendor adapters, organization policy controls, the multi-tenant control plane, self-hosted product packaging, and versioned release handoff tooling.
+The remaining M5 item is live subscription validation of deployment, DNS, Entra callback behavior, managed-identity access, end-to-end sanitized telemetry flow, and rollback/redeployment behavior. M6 security/reliability work is complete. M7 reference productization is complete with vendor adapters, organization policy controls, the multi-tenant control plane, self-hosted product packaging, and versioned release handoff tooling. M8 adds tenant-isolated storage and query paths.
