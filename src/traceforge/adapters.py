@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import time
 from collections.abc import Iterator, Mapping
@@ -17,6 +18,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2_grpc import TraceS
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.trace.v1.trace_pb2 import Span, Status
 
+from traceforge.control_plane import fetch_control_plane_session
 from traceforge.policy import OrganizationPolicy, load_policy
 from traceforge.privacy import Scrubber
 
@@ -398,6 +400,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--client-cert-file", type=Path)
     parser.add_argument("--client-key-file", type=Path)
     parser.add_argument("--policy-file", type=Path)
+    parser.add_argument("--control-plane-url", default=os.getenv("TRACEFORGE_CONTROL_PLANE_URL"))
+    parser.add_argument("--api-key", default=os.getenv("TRACEFORGE_API_KEY"))
     return parser
 
 
@@ -410,21 +414,49 @@ def main() -> int:
             "--client-cert-file and --client-key-file must be provided together"
         )
 
+    if args.policy_file is not None and args.control_plane_url:
+        print(
+            "traceforge-adapter: --policy-file and --control-plane-url are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+    if args.control_plane_url and not args.api_key:
+        print(
+            "traceforge-adapter: --api-key or TRACEFORGE_API_KEY is required with the control plane",
+            file=sys.stderr,
+        )
+        return 2
+
     policy: OrganizationPolicy | None = None
-    if args.policy_file is not None:
-        try:
+    ingest_token: str | None = None
+    try:
+        if args.control_plane_url:
+            session = fetch_control_plane_session(
+                args.control_plane_url,
+                args.api_key,
+                timeout_seconds=args.timeout_seconds,
+            )
+            policy = session.policy
+            ingest_token = session.ingest_token
+            policy.require_allowed(args.adapter)
+        elif args.policy_file is not None:
             policy = load_policy(args.policy_file)
             policy.require_allowed(args.adapter)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"traceforge-adapter: policy error: {exc}", file=sys.stderr)
-            return 2
-        if args.batch_size is not None and args.batch_size > policy.max_batch_size:
-            print(
-                "traceforge-adapter: --batch-size exceeds organization policy limit "
-                f"({policy.max_batch_size})",
-                file=sys.stderr,
-            )
-            return 2
+    except (ConnectionError, OSError, PermissionError, ValueError, json.JSONDecodeError) as exc:
+        print(f"traceforge-adapter: policy/control-plane error: {exc}", file=sys.stderr)
+        return 2
+
+    if (
+        policy is not None
+        and args.batch_size is not None
+        and args.batch_size > policy.max_batch_size
+    ):
+        print(
+            "traceforge-adapter: --batch-size exceeds organization policy limit "
+            f"({policy.max_batch_size})",
+            file=sys.stderr,
+        )
+        return 2
 
     batch_size = args.batch_size or (policy.max_batch_size if policy is not None else 100)
     adapter = create_adapter(args.adapter)
@@ -452,7 +484,7 @@ def main() -> int:
             normalized += 1
             buffer.append(event)
             if len(buffer) >= batch_size:
-                _flush(buffer, stub, args.timeout_seconds, policy)
+                _flush(buffer, stub, args.timeout_seconds, policy, ingest_token)
                 batches += 1
                 buffer.clear()
         if buffer:
@@ -491,10 +523,16 @@ def _flush(
     stub: TraceServiceStub | None,
     timeout_seconds: float,
     policy: OrganizationPolicy | None,
+    authorization_token: str | None,
 ) -> None:
     request = build_export_request(events, policy=policy)
     if stub is not None:
-        stub.Export(request, timeout=timeout_seconds)
+        metadata = (
+            (("authorization", f"Bearer {authorization_token}"),)
+            if authorization_token
+            else None
+        )
+        stub.Export(request, timeout=timeout_seconds, metadata=metadata)
 
 
 def _records(source: str) -> Iterator[Mapping[str, Any]]:
