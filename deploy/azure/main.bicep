@@ -77,6 +77,9 @@ param redactionMode string = 'redact'
 @description('Optional Key Vault secret URI containing TRACEFORGE_TOKENIZATION_KEY. Required when redactionMode=tokenize.')
 param tokenizationSecretUri string = ''
 
+@description('Optional Key Vault secret URI containing the tenant-token signing key. When supplied, the gateway requires signed tenant ingest tokens.')
+param tenantSigningSecretUri string = ''
+
 @description('Kusto database retention in ISO-8601 duration format.')
 param kustoSoftDeletePeriod string = 'P30D'
 
@@ -98,6 +101,7 @@ var kustoDatabaseName = 'traceforge'
 var deployViewer = deployKusto && !empty(viewerImage) && !empty(entraClientId)
 var privateNetworkingEnabled = enableVnetIntegration && enablePrivateEndpoints
 var gatewayMutualTlsEnabled = length(gatewayTrustedClientCertificateHashes) > 0
+var gatewayTenantAuthEnabled = !empty(tenantSigningSecretUri)
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var collectorConfig = deployKusto
@@ -501,13 +505,22 @@ resource collectorApp 'Microsoft.App/containerApps@2026-01-01' = {
   ]
 }
 
-var gatewaySecrets = empty(tokenizationSecretUri) ? [] : [
-  {
-    name: 'tokenization-key'
-    keyVaultUrl: tokenizationSecretUri
-    identity: gatewayIdentity.id
-  }
-]
+var gatewaySecrets = concat(
+  empty(tokenizationSecretUri) ? [] : [
+    {
+      name: 'tokenization-key'
+      keyVaultUrl: tokenizationSecretUri
+      identity: gatewayIdentity.id
+    }
+  ],
+  empty(tenantSigningSecretUri) ? [] : [
+    {
+      name: 'tenant-signing-key'
+      keyVaultUrl: tenantSigningSecretUri
+      identity: gatewayIdentity.id
+    }
+  ]
+)
 
 var gatewayEnv = concat([
   {
@@ -558,10 +571,21 @@ var gatewayEnv = concat([
     name: 'TRACEFORGE_RATE_LIMIT_MAX_CLIENTS'
     value: string(gatewayRateLimitMaxClients)
   }
-], empty(tokenizationSecretUri) ? [] : [
+],
+empty(tokenizationSecretUri) ? [] : [
   {
     name: 'TRACEFORGE_TOKENIZATION_KEY'
     secretRef: 'tokenization-key'
+  }
+],
+empty(tenantSigningSecretUri) ? [] : [
+  {
+    name: 'TRACEFORGE_TENANT_SIGNING_KEY'
+    secretRef: 'tenant-signing-key'
+  }
+  {
+    name: 'TRACEFORGE_TENANT_AUTH_REQUIRED'
+    value: 'true'
   }
 ])
 
@@ -731,6 +755,7 @@ resource viewerAuth 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if (d
 output gatewayFqdn string = gatewayApp.properties.configuration.ingress.fqdn
 output gatewayOtlpEndpoint string = '${gatewayApp.properties.configuration.ingress.fqdn}:443'
 output gatewayMutualTlsEnabled bool = gatewayMutualTlsEnabled
+output gatewayTenantAuthEnabled bool = gatewayTenantAuthEnabled
 output gatewayClientRateLimitPerMinute int = gatewayClientRateLimitPerMinute
 output collectorFqdn string = collectorApp.properties.configuration.ingress.fqdn
 output viewerFqdn string = deployViewer ? viewerApp.properties.configuration.ingress.fqdn : ''
