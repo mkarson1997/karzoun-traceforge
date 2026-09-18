@@ -4,7 +4,7 @@ Privacy-first observability and trace collection for AI coding agents.
 
 TraceForge is a vendor-neutral OpenTelemetry pipeline that captures coding-agent telemetry, removes secrets and personally identifiable information before durable storage, correlates task/session/trace activity, and exposes a searchable read-only trace viewer plus sanitized dataset exports.
 
-> Status: engineering preview. M0-M4 and M6 are complete. The M5 Azure production profile is implemented in code with real-subscription validation still outstanding. M7 productization is underway, starting with pluggable Codex, Claude Code, GitHub Copilot, and generic event adapters.
+> Status: engineering preview. M0-M4 and M6 are complete. The M5 Azure production profile is implemented in code with real-subscription validation still outstanding. M7 now includes coding-agent adapters, organization policy controls, and a multi-tenant control plane; commercial packaging remains.
 
 ## Why TraceForge
 
@@ -34,7 +34,7 @@ Central OpenTelemetry Collector
 
 The local profile uses SQLite WAL behind the same read-only viewer contract. The hardened Azure profile can place Container Apps inside a dedicated VNet and route Key Vault, ADLS, and ADX through Azure Private Link.
 
-See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/azure-deployment.md](docs/azure-deployment.md), and [docs/roadmap.md](docs/roadmap.md).
+See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/threat-model.md), [docs/data-model.md](docs/data-model.md), [docs/adapters.md](docs/adapters.md), [docs/policies.md](docs/policies.md), [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/azure-deployment.md](docs/azure-deployment.md), and [docs/roadmap.md](docs/roadmap.md).
 
 ## Implemented
 
@@ -78,6 +78,24 @@ See [docs/architecture.md](docs/architecture.md), [docs/threat-model.md](docs/th
 - Per-organization adapter allowlists, capture controls, and batch limits
 
 See [docs/adapters.md](docs/adapters.md) for usage and the generic event contract, and [docs/policies.md](docs/policies.md) for organization policy controls.
+
+### Multi-tenant control plane
+
+- Organization registry with active/suspended lifecycle
+- Per-organization effective policy delivery
+- Salted PBKDF2-hashed API keys with scoped access and revocation
+- Short-lived HMAC-signed ingest tokens
+- Adapter bootstrap through policy and ingest-token endpoints
+- Gateway-side token verification and authenticated organization enforcement
+- Client-supplied organization IDs are overwritten at the gateway
+- Authenticated organization identity participates in per-tenant rate limiting
+- Non-root control-plane container image with persistent reference volume
+
+The reference control-plane database is SQLite WAL for a single durable instance. The tenant-token
+contract and gateway enforcement are backend-independent, so a commercial horizontally scaled
+deployment can replace the registry persistence layer with a managed transactional database.
+
+See [docs/multi-tenancy.md](docs/multi-tenancy.md).
 
 ### Azure production profile
 
@@ -216,12 +234,13 @@ For production transport, configure a trusted CA and client certificate/key for 
 
 ## Azure production profile
 
-Build the three runtime images:
+Build the runtime images:
 
 ```bash
 docker build -t <registry>/traceforge:0.1.0 .
 docker build -f Dockerfile.collector -t <registry>/traceforge-collector:0.1.0 .
 docker build -f Dockerfile.viewer -t <registry>/traceforge-viewer:0.1.0 .
+docker build -f Dockerfile.control-plane -t <registry>/traceforge-control-plane:0.1.0 .
 ```
 
 Validate the complete Bicep graph:
@@ -278,7 +297,7 @@ The protected viewer is deployed only when ADX is enabled and both `viewerImage`
 
 M0-M4 are complete. The M5 implementation now covers the Azure application path and private-networking code. The final M5 gate is validation in a real Azure subscription, including Private DNS, Entra callback behavior, managed-identity access, sanitized OTLP ingestion, and rollback/redeployment checks.
 
-M6 security and reliability hardening is complete, including inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 productization is underway: coding-agent adapters plus organization policy controls are complete, with multi-tenancy and commercial deployment workflows next.
+M6 security and reliability hardening is complete, including inbound mTLS rotation, admission/rate controls, audit policy, retention, SBOM/scanning, and failure/load testing. M7 productization now includes coding-agent adapters, organization policy controls, and a multi-tenant control plane. Commercial deployment packaging is the remaining M7 item.
 
 ## Commercial status
 
