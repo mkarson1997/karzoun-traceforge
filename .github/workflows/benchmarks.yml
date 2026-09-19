@@ -21,8 +21,8 @@ jobs:
     env:
       SOAK_DURATION_SECONDS: ${{ inputs.soak_duration_seconds || '30' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Install TraceForge test tooling
@@ -72,7 +72,7 @@ jobs:
         run: docker compose down -v || true
       - name: Upload benchmark evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: traceforge-benchmark-evidence
           path: |
